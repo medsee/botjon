@@ -1,15 +1,10 @@
 """
 Telegram orqali scalping botni boshqarish
-/start_trading  — botni ishga tushirish
-/stop_trading   — to'xtatish
-/status         — holat va statistika
-/balance        — balansni ko'rish
-/positions      — ochiq pozitsiyalar
-/settings       — sozlamalar
 """
 import asyncio
 import logging
 import os
+import sys
 import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -20,12 +15,14 @@ from scalping_bot import ScalpingBot
 from risk_manager import RiskConfig
 
 load_dotenv()
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO,
+    handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()],
+)
 logger = logging.getLogger(__name__)
 
-# Global bot instance
 trading_bot: ScalpingBot = None
-bot_task = None
-bot_loop = None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -46,32 +43,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 *MEXC Scalping Bot*\n\n"
         "Avtomatik savdo boti boshqaruv paneli.\n\n"
-        "Botni ishga tushirishdan oldin:\n"
-        "1️⃣ MEXC API kalitlarini `.env` ga kiriting\n"
-        "2️⃣ Balansni tekshiring\n"
-        "3️⃣ ▶️ tugmasini bosing",
+        "▶️ tugmasini bosib botni ishga tushiring!",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 async def start_trading_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global trading_bot, bot_task, bot_loop
-
+    global trading_bot
     msg = update.effective_message
+
     if trading_bot and trading_bot.running:
         await msg.reply_text("⚠️ Bot allaqachon ishlayapti!")
         return
 
     api_key = os.getenv("MEXC_API_KEY", "")
     if not api_key or api_key == "your_mexc_api_key_here":
-        await msg.reply_text(
-            "❌ MEXC API kaliti topilmadi!\n\n"
-            "`.env` faylga qo'shing:\n"
-            "`MEXC_API_KEY=...`\n"
-            "`MEXC_SECRET_KEY=...`",
-            parse_mode="Markdown",
-        )
+        await msg.reply_text("❌ MEXC API kaliti topilmadi! .env faylni tekshiring.")
         return
 
     await msg.reply_text("⏳ Bot ishga tushirilmoqda...")
@@ -80,47 +68,42 @@ async def start_trading_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trading_bot.telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     trading_bot.telegram_chat_id = str(update.effective_chat.id)
 
-    # Botni alohida thread'da ishga tushirish
     def run_bot():
-        global bot_loop
-        bot_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(bot_loop)
-        bot_loop.run_until_complete(trading_bot.run())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(trading_bot.run())
 
     thread = threading.Thread(target=run_bot, daemon=True)
     thread.start()
 
-    await msg.reply_text("✅ *Scalping bot ishga tushdi!*\nStatistika avtomatik yuboriladi.", parse_mode="Markdown")
+    await msg.reply_text(
+        "✅ *Scalping bot ishga tushdi!*\nStatistika avtomatik yuboriladi.",
+        parse_mode="Markdown"
+    )
 
 
 async def stop_trading_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global trading_bot
     msg = update.effective_message
-
     if not trading_bot or not trading_bot.running:
         await msg.reply_text("⚠️ Bot hozir ishlamayapti.")
         return
-
     trading_bot.running = False
-    await msg.reply_text("🔴 Bot to'xtatish buyrug'i yuborildi. Pozitsiyalar yopilmoqda...")
+    await msg.reply_text("🔴 Bot to'xtatilmoqda...")
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
     global trading_bot
-
+    msg = update.effective_message
     if not trading_bot:
         await msg.reply_text("❌ Bot hali ishga tushmagan.")
         return
-
     status = "✅ Ishlayapti" if trading_bot.running else "🔴 To'xtatilgan"
     pos_count = len(trading_bot.positions)
     summary = trading_bot.risk.get_summary()
-
     positions_text = ""
     for sym, pos in trading_bot.positions.items():
         positions_text += f"\n• `{sym}` {pos.side} @ ${pos.entry_price:,.6f} ({pos.age_seconds:.0f}s)"
-
     text = (
         f"🤖 *Bot holati:* {status}\n\n"
         f"📂 Ochiq pozitsiyalar: *{pos_count}*{positions_text}\n\n"
@@ -137,28 +120,18 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     balance = await api.get_balance("USDT")
     await api.close()
-
     if balance == 0:
-        await msg.reply_text(
-            "❌ Balans 0 yoki API ulana olmadi.\n"
-            "API kalitlarni tekshiring."
-        )
+        await msg.reply_text("❌ Balans 0 yoki API ulana olmadi.")
         return
-
-    await msg.reply_text(
-        f"💰 *USDT Balans:* `{balance:.4f} USDT`",
-        parse_mode="Markdown",
-    )
+    await msg.reply_text(f"💰 *USDT Balans:* `{balance:.4f} USDT`", parse_mode="Markdown")
 
 
 async def positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
     global trading_bot
-
+    msg = update.effective_message
     if not trading_bot or not trading_bot.positions:
         await msg.reply_text("📭 Ochiq pozitsiyalar yo'q.")
         return
-
     text = "📂 *Ochiq Pozitsiyalar:*\n\n"
     for sym, pos in trading_bot.positions.items():
         text += (
@@ -180,8 +153,7 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Max savdo: `{cfg.max_trade_pct*100:.0f}%` balansdan\n"
         f"Max pozitsiyalar: `{cfg.max_open_positions}`\n"
         f"Max kunlik zarar: `{cfg.max_daily_loss_pct*100:.0f}%`\n"
-        f"Max kunlik savdolar: `{cfg.max_daily_trades}`\n\n"
-        "Sozlamalarni `.env` fayli orqali o'zgartiring."
+        f"Max kunlik savdolar: `{cfg.max_daily_trades}`\n"
     )
     await update.effective_message.reply_text(text, parse_mode="Markdown")
 
@@ -209,6 +181,10 @@ def main():
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN topilmadi!")
 
+    # Windows uchun event loop muammosini hal qilish
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("start_trading", start_trading_cmd))
@@ -220,7 +196,7 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
 
     logger.info("Telegram boshqaruv boti ishga tushdi")
-    app.run_polling()
+    app.run_polling(allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":
