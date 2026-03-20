@@ -55,26 +55,31 @@ class MEXCFutures:
             "Content-Type": "application/json",
         }
 
-    async def _get(self, endpoint: str, params: dict = None) -> Optional[dict]:
-        try:
-            params = params or {}
-            query = urlencode(params)
-            headers = self._get_headers(query)
-            s = await self._get_session()
-            url = f"{MEXC_FUTURES_BASE}{endpoint}"
-            if query:
-                url += f"?{query}"
-            async with s.get(url, headers=headers) as r:
-                import json
-                text = await r.text()
-                data = json.loads(text)
-                if data.get("success") or data.get("code") == 0:
-                    return data.get("data", data)
-                logger.error(f"Futures GET error: {data}")
-                return None
-        except Exception as e:
-            logger.error(f"Futures GET exception: {e}")
-            return None
+    async def _get(self, endpoint: str, params: dict = None, retry: int = 2) -> Optional[dict]:
+        for attempt in range(retry):
+            try:
+                params = params or {}
+                query = urlencode(params)
+                headers = self._get_headers(query)
+                s = await self._get_session()
+                url = f"{MEXC_FUTURES_BASE}{endpoint}"
+                if query:
+                    url += f"?{query}"
+                async with s.get(url, headers=headers) as r:
+                    import json
+                    text = await r.text()
+                    data = json.loads(text)
+                    if data.get("success") or data.get("code") == 0:
+                        return data.get("data", data)
+                    if data.get("code") == 510:  # Rate limit
+                        await asyncio.sleep(2)
+                        continue
+                    logger.error(f"Futures GET error: {data}")
+                    return None
+            except Exception as e:
+                logger.error(f"Futures GET exception: {e}")
+                await asyncio.sleep(1)
+        return None
 
     async def _post(self, endpoint: str, body: dict = None) -> Optional[dict]:
         try:
