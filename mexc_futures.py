@@ -23,7 +23,14 @@ class MEXCFutures:
         self.secret_key = secret_key.strip()
         self.leverage   = 3
         self._session   = requests.Session()
-        self._session.headers.update({"Content-Type": "application/json"})
+        self._session.headers.update({
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://futures.mexc.com",
+            "Referer": "https://futures.mexc.com/",
+        })
 
     def _sign(self, timestamp: str, params_str: str) -> str:
         raw = self.api_key + timestamp + params_str
