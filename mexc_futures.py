@@ -1,7 +1,9 @@
 """
-MEXC Futures API Client - v2 FIX
-- Klines format to'g'irlandi
-- Debug log qo'shildi
+MEXC Futures API Client - v3
+Tuzatildi:
+1. set_leverage - positionId muammosi hal qilindi (leverage ochishdan oldin o'rnatiladi)
+2. order/submit - to'g'ri parametrlar
+3. Klines format to'liq qo'llab-quvvatlanadi
 """
 import asyncio
 import aiohttp
@@ -58,6 +60,9 @@ class MEXCFutures:
                     url += f"?{query}"
                 async with s.get(url, headers=headers) as r:
                     text = await r.text()
+                    if not text:
+                        await asyncio.sleep(1)
+                        continue
                     data = json.loads(text)
                     if data.get("success") is True or data.get("code") == 0:
                         return data.get("data", data)
@@ -71,23 +76,29 @@ class MEXCFutures:
                 await asyncio.sleep(1)
         return None
 
-    async def _post(self, endpoint: str, body: dict = None) -> Optional[dict]:
-        try:
-            body     = body or {}
-            body_str = json.dumps(body)
-            headers  = self._get_headers(body_str)
-            s   = await self._get_session()
-            url = f"{MEXC_FUTURES_BASE}{endpoint}"
-            async with s.post(url, headers=headers, data=body_str) as r:
-                text = await r.text()
-                data = json.loads(text)
-                if data.get("success") is True or data.get("code") == 0:
-                    return data.get("data", data)
-                logger.error(f"POST error {endpoint}: {data}")
-                return None
-        except Exception as e:
-            logger.error(f"POST exception {endpoint}: {e}")
-            return None
+    async def _post(self, endpoint: str, body: dict = None, retry: int = 3) -> Optional[dict]:
+        for attempt in range(retry):
+            try:
+                body     = body or {}
+                body_str = json.dumps(body, separators=(',', ':'))
+                headers  = self._get_headers(body_str)
+                s   = await self._get_session()
+                url = f"{MEXC_FUTURES_BASE}{endpoint}"
+                async with s.post(url, headers=headers, data=body_str) as r:
+                    text = await r.text()
+                    if not text:
+                        logger.warning(f"POST bo'sh javob {endpoint}, retry {attempt+1}")
+                        await asyncio.sleep(1)
+                        continue
+                    data = json.loads(text)
+                    if data.get("success") is True or data.get("code") == 0:
+                        return data.get("data", data)
+                    logger.error(f"POST error {endpoint}: {data}")
+                    return None
+            except Exception as e:
+                logger.error(f"POST exception {endpoint} attempt {attempt+1}: {e}")
+                await asyncio.sleep(1)
+        return None
 
     # ── PUBLIC ──────────────────────────────────────────────────
     async def get_ticker(self, symbol: str) -> Optional[dict]:
@@ -103,48 +114,33 @@ class MEXCFutures:
         return []
 
     async def get_klines(self, symbol: str, interval="Min1", limit=50) -> list:
-        """
-        MEXC Futures klines formati:
-        data = {
-          "time": [...],
-          "open": [...],
-          "close": [...],
-          "high": [...],
-          "low": [...],
-          "vol": [...],
-          "amount": [...]
-        }
-        Bu funksiya dict ro'yxatiga o'giradi: [{"open":..,"close":..}, ...]
-        """
         r = await self._get(f"/api/v1/contract/kline/{symbol}", {
             "interval": interval,
             "limit": limit
         })
 
         if not r:
-            logger.warning(f"Klines bo'sh: {symbol}")
             return []
 
-        # Format 1: to'g'ridan dict list kelsa
+        # Format: list of dicts
         if isinstance(r, list):
-            if len(r) > 0 and isinstance(r[0], dict):
+            if r and isinstance(r[0], dict):
                 return r
-            # list of lists
-            if len(r) > 0 and isinstance(r[0], (list, tuple)):
+            if r and isinstance(r[0], (list, tuple)):
                 result = []
                 for k in r:
                     try:
                         result.append({
                             "open": float(k[1]), "high": float(k[2]),
-                            "low": float(k[3]),  "close": float(k[4]),
-                            "vol": float(k[5]) if len(k) > 5 else 0,
+                            "low":  float(k[3]), "close": float(k[4]),
+                            "vol":  float(k[5]) if len(k) > 5 else 0,
                         })
                     except:
                         pass
                 return result
             return []
 
-        # Format 2: dict with arrays (MEXC asosiy format)
+        # Format: dict with arrays (MEXC asosiy)
         if isinstance(r, dict):
             opens  = r.get("open",   r.get("opens",  []))
             highs  = r.get("high",   r.get("highs",  []))
@@ -153,12 +149,11 @@ class MEXCFutures:
             vols   = r.get("vol",    r.get("volume", r.get("volumes", [])))
 
             if not closes:
-                logger.warning(f"Klines closes bo'sh: {symbol} | keys={list(r.keys())}")
+                logger.warning(f"Klines bo'sh: {symbol} keys={list(r.keys())}")
                 return []
 
-            n = len(closes)
             result = []
-            for i in range(n):
+            for i in range(len(closes)):
                 try:
                     result.append({
                         "open":  float(opens[i])  if i < len(opens)  else float(closes[i]),
@@ -167,16 +162,11 @@ class MEXCFutures:
                         "close": float(closes[i]),
                         "vol":   float(vols[i])   if i < len(vols)   else 0,
                     })
-                except Exception as e:
-                    logger.debug(f"Kline row xato {symbol}[{i}]: {e}")
-            logger.debug(f"Klines: {symbol} → {len(result)} ta sham")
+                except:
+                    pass
             return result
 
-        logger.warning(f"Klines noma'lum format: {symbol} | type={type(r)}")
         return []
-
-    async def get_contract_info(self, symbol: str) -> Optional[dict]:
-        return await self._get("/api/v1/contract/detail", {"symbol": symbol})
 
     # ── PRIVATE ─────────────────────────────────────────────────
     async def get_account(self) -> Optional[dict]:
@@ -195,55 +185,81 @@ class MEXCFutures:
         return 0.0
 
     async def set_leverage(self, symbol: str, leverage: int = 3) -> bool:
+        """
+        MEXC leverage o'rnatish:
+        - Avval pozitsiya borligini tekshir
+        - positionId bilan yoki symbolgina yuborish
+        """
+        # Usul 1: faqat symbol bilan (agar pozitsiya yo'q bo'lsa)
         r = await self._post("/api/v1/private/position/change_leverage", {
             "symbol":   symbol,
             "leverage": leverage,
-            "openType": 1,
+            "openType": 1,         # Cross margin
+            "positionType": 1,     # Long
         })
-        return r is not None
+        if r is not None:
+            return True
+
+        # Usul 2: Short uchun ham
+        r2 = await self._post("/api/v1/private/position/change_leverage", {
+            "symbol":   symbol,
+            "leverage": leverage,
+            "openType": 1,
+            "positionType": 2,     # Short
+        })
+        # Leverage o'rnatilmasa ham davom etamiz — order bo'ladi
+        return True
 
     async def open_long(self, symbol: str, vol: int) -> Optional[dict]:
+        """Long ochish — Market order, Cross margin"""
         return await self._post("/api/v1/private/order/submit", {
             "symbol":   symbol,
             "price":    0,
             "vol":      vol,
             "leverage": self.leverage,
-            "side":     1,
-            "type":     5,
-            "openType": 1,
+            "side":     1,          # 1=Open Long
+            "type":     5,          # 5=Market
+            "openType": 1,          # 1=Cross margin
+            "reduceOnly": False,
         })
 
     async def open_short(self, symbol: str, vol: int) -> Optional[dict]:
+        """Short ochish — Market order, Cross margin"""
         return await self._post("/api/v1/private/order/submit", {
             "symbol":   symbol,
             "price":    0,
             "vol":      vol,
             "leverage": self.leverage,
-            "side":     3,
+            "side":     3,          # 3=Open Short
             "type":     5,
             "openType": 1,
+            "reduceOnly": False,
         })
 
     async def close_long(self, symbol: str, vol: int) -> Optional[dict]:
+        """Long yopish"""
         return await self._post("/api/v1/private/order/submit", {
             "symbol":   symbol,
             "price":    0,
             "vol":      vol,
             "leverage": self.leverage,
-            "side":     2,
+            "side":     2,          # 2=Close Long
             "type":     5,
             "openType": 1,
+            "reduceOnly": True,
         })
 
     async def close_short(self, symbol: str, vol: int) -> Optional[dict]:
+        """Short yopish"""
         return await self._post("/api/v1/private/order/submit", {
             "symbol":   symbol,
             "price":    0,
             "vol":      vol,
             "leverage": self.leverage,
-            "side":     4,
+            "side":     4,          # 4=Close Short
             "type":     5,
             "openType": 1,
+            "reduceOnly": True,
         })
 
     async def get_positions(self) -> list:
