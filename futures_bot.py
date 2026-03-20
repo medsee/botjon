@@ -168,8 +168,11 @@ class FuturesBot:
         if balance < 5:
             return False
 
-        # Leverage o'rnatish
-        await self.api.set_leverage(signal.symbol, self.leverage)
+        # Leverage o'rnatish (xato bo'lsa ham davom etamiz)
+        try:
+            await self.api.set_leverage(signal.symbol, self.leverage)
+        except:
+            pass
 
         vol    = self.calc_vol(balance, signal.price)
         tp, sl = self.calc_tp_sl(signal.price, signal.side)
