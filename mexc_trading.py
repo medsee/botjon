@@ -1,6 +1,5 @@
 """
-MEXC Trading API Client
-Public + Private (signed) endpoints
+MEXC Trading API Client - Tuzatilgan versiya
 """
 import asyncio
 import aiohttp
@@ -9,6 +8,7 @@ import hmac
 import time
 import logging
 from typing import Optional
+from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
 MEXC_BASE = "https://api.mexc.com"
@@ -16,62 +16,82 @@ MEXC_BASE = "https://api.mexc.com"
 
 class MEXCTrading:
     def __init__(self, api_key: str, secret_key: str):
-        self.api_key = api_key
-        self.secret_key = secret_key
+        self.api_key = api_key.strip()
+        self.secret_key = secret_key.strip()
         self.session: Optional[aiohttp.ClientSession] = None
 
-    async def _session(self) -> aiohttp.ClientSession:
+    async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=10),
-                headers={"X-MEXC-APIKEY": self.api_key},
+                timeout=aiohttp.ClientTimeout(total=15),
             )
         return self.session
 
-    def _sign(self, params: dict) -> str:
-        query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    def _sign(self, query_string: str) -> str:
         return hmac.new(
-            self.secret_key.encode(), query.encode(), hashlib.sha256
+            self.secret_key.encode("utf-8"),
+            query_string.encode("utf-8"),
+            hashlib.sha256
         ).hexdigest()
 
     async def _public(self, endpoint: str, params: dict = None):
-        s = await self._session()
-        async with s.get(f"{MEXC_BASE}{endpoint}", params=params) as r:
-            if r.status == 200:
-                return await r.json()
-            logger.error(f"Public error {r.status}: {await r.text()}")
+        try:
+            s = await self._get_session()
+            async with s.get(f"{MEXC_BASE}{endpoint}", params=params) as r:
+                text = await r.text()
+                if r.status == 200:
+                    import json
+                    return json.loads(text)
+                logger.error(f"Public error {r.status}: {text}")
+                return None
+        except Exception as e:
+            logger.error(f"Public request error: {e}")
             return None
 
     async def _private(self, method: str, endpoint: str, params: dict = None):
-        params = params or {}
-        params["timestamp"] = int(time.time() * 1000)
-        params["recvWindow"] = 5000
-        params["signature"] = self._sign(params)
-        s = await self._session()
         try:
+            params = params or {}
+            params["timestamp"] = int(time.time() * 1000)
+            params["recvWindow"] = 10000
+
+            # Query string imzolash
+            query_string = urlencode(params)
+            signature = self._sign(query_string)
+            query_string += f"&signature={signature}"
+
+            url = f"{MEXC_BASE}{endpoint}?{query_string}"
+            headers = {
+                "X-MEXC-APIKEY": self.api_key,
+                "Content-Type": "application/json",
+            }
+
+            s = await self._get_session()
             if method == "GET":
-                async with s.get(f"{MEXC_BASE}{endpoint}", params=params) as r:
-                    data = await r.json()
-                    if r.status != 200:
-                        logger.error(f"Private GET error {r.status}: {data}")
-                        return None
-                    return data
+                async with s.get(url, headers=headers) as r:
+                    import json
+                    text = await r.text()
+                    if r.status == 200:
+                        return json.loads(text)
+                    logger.error(f"Private GET error {r.status}: {text}")
+                    return None
             elif method == "POST":
-                async with s.post(f"{MEXC_BASE}{endpoint}", params=params) as r:
-                    data = await r.json()
-                    if r.status != 200:
-                        logger.error(f"Private POST error {r.status}: {data}")
-                        return None
-                    return data
+                async with s.post(url, headers=headers) as r:
+                    import json
+                    text = await r.text()
+                    if r.status == 200:
+                        return json.loads(text)
+                    logger.error(f"Private POST error {r.status}: {text}")
+                    return None
             elif method == "DELETE":
-                async with s.delete(f"{MEXC_BASE}{endpoint}", params=params) as r:
-                    data = await r.json()
-                    if r.status != 200:
-                        logger.error(f"Private DELETE error {r.status}: {data}")
-                        return None
-                    return data
+                async with s.delete(url, headers=headers) as r:
+                    import json
+                    text = await r.text()
+                    if r.status == 200:
+                        return json.loads(text)
+                    logger.error(f"Private DELETE error {r.status}: {text}")
+                    return None
         except Exception as e:
-            logger.error(f"Request error: {e}")
+            logger.error(f"Private request error: {e}")
             return None
 
     # ── PUBLIC ────────────────────────────────────────────────
@@ -90,9 +110,6 @@ class MEXCTrading:
 
     async def get_order_book(self, symbol: str, limit=5) -> Optional[dict]:
         return await self._public("/api/v3/depth", {"symbol": symbol, "limit": limit})
-
-    async def get_exchange_info(self) -> Optional[dict]:
-        return await self._public("/api/v3/exchangeInfo")
 
     # ── PRIVATE ───────────────────────────────────────────────
     async def get_account(self) -> Optional[dict]:
@@ -113,9 +130,9 @@ class MEXCTrading:
     ) -> Optional[dict]:
         params = {
             "symbol": symbol,
-            "side": side,           # BUY / SELL
+            "side": side,
             "type": order_type,
-            "quantity": str(quantity),
+            "quantity": f"{quantity:.6f}",
         }
         return await self._private("POST", "/api/v3/order", params)
 
@@ -130,11 +147,6 @@ class MEXCTrading:
             params["symbol"] = symbol
         r = await self._private("GET", "/api/v3/openOrders", params)
         return r if isinstance(r, list) else []
-
-    async def get_order_status(self, symbol: str, order_id: str) -> Optional[dict]:
-        return await self._private("GET", "/api/v3/order", {
-            "symbol": symbol, "orderId": order_id
-        })
 
     async def close(self):
         if self.session and not self.session.closed:
