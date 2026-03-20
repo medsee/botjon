@@ -74,11 +74,11 @@ class FuturesBot:
         self.max_hold_seconds   = int(os.getenv("MAX_HOLD_SECONDS", "240"))    # 4 daqiqa max
 
         # ── Tezlik sozlamalari ───────────────────────────────
-        self.scan_interval   = 15     # Har 15 soniyada skan (eski: 30)
+        self.scan_interval   = 10     # Har 10 soniyada skan
         self.monitor_interval = 3     # Har 3 soniyada pozitsiya tekshiruvi (eski: 5)
         self.top_symbols_limit = 40   # Ko'proq juftlik (eski: 30)
         self.batch_size      = 8      # Parallel tahlil batch (eski: 5)
-        self.batch_delay     = 0.5    # Batch orasidagi kutish (eski: 1.0)
+        self.batch_delay     = 0.3    # Batch orasidagi kutish
 
         self.positions: dict[str, FuturesPosition] = {}
         self.blacklist: set  = set()
@@ -382,7 +382,7 @@ class FuturesBot:
                 return
             try:
                 # Parallel klines + ticker
-                klines_task = self.api.get_klines(symbol, "Min1", 80)
+                klines_task = self.api.get_klines(symbol, "Min1", 50)
                 ticker_task = self.api.get_ticker(symbol)
                 klines, ticker = await asyncio.gather(klines_task, ticker_task)
                 if not klines or not ticker:
