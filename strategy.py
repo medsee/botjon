@@ -1,6 +1,8 @@
 """
-Scalping Strategy — texnik tahlil asosida signal beradi
-Indikatorlar: EMA, RSI, Bollinger Bands, Volume
+Kuchaytirilgan Scalping Strategy
+- Ko'proq juftlik tahlil
+- Tezroq signal
+- Ko'proq foyda imkoniyati
 """
 import logging
 from dataclasses import dataclass
@@ -12,163 +14,182 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Signal:
     symbol: str
-    side: str           # BUY yoki SELL
-    strength: float     # 0.0 – 1.0
+    side: str
+    strength: float
     reason: str
     price: float
     volume_24h: float
 
 
-def ema(prices: list, period: int) -> float:
-    """Exponential Moving Average"""
+def ema(prices, period):
     if len(prices) < period:
         return prices[-1] if prices else 0
     k = 2 / (period + 1)
-    ema_val = sum(prices[:period]) / period
+    val = sum(prices[:period]) / period
     for p in prices[period:]:
-        ema_val = p * k + ema_val * (1 - k)
-    return ema_val
+        val = p * k + val * (1 - k)
+    return val
 
 
-def rsi(prices: list, period: int = 14) -> float:
-    """Relative Strength Index"""
+def rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50.0
     gains, losses = [], []
     for i in range(1, len(prices)):
-        diff = prices[i] - prices[i - 1]
-        gains.append(max(diff, 0))
-        losses.append(max(-diff, 0))
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-    if avg_loss == 0:
+        d = prices[i] - prices[i-1]
+        gains.append(max(d, 0))
+        losses.append(max(-d, 0))
+    ag = sum(gains[-period:]) / period
+    al = sum(losses[-period:]) / period
+    if al == 0:
         return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + ag/al))
 
 
-def bollinger(prices: list, period: int = 20, std_mult: float = 2.0) -> tuple:
-    """Bollinger Bands (upper, middle, lower)"""
+def bollinger(prices, period=20, mult=2.0):
     if len(prices) < period:
         p = prices[-1]
         return p, p, p
-    window = prices[-period:]
-    mid = sum(window) / period
-    variance = sum((x - mid) ** 2 for x in window) / period
-    std = variance ** 0.5
-    return mid + std_mult * std, mid, mid - std_mult * std
+    w = prices[-period:]
+    mid = sum(w) / period
+    std = (sum((x-mid)**2 for x in w) / period) ** 0.5
+    return mid + mult*std, mid, mid - mult*std
 
 
-def parse_klines(raw: list) -> dict:
-    """MEXC klines formatini parse qilish"""
-    opens = [float(k[1]) for k in raw]
-    highs = [float(k[2]) for k in raw]
-    lows = [float(k[3]) for k in raw]
-    closes = [float(k[4]) for k in raw]
-    volumes = [float(k[5]) for k in raw]
+def macd(prices, fast=12, slow=26, signal=9):
+    if len(prices) < slow:
+        return 0, 0
+    ema_fast = ema(prices, fast)
+    ema_slow = ema(prices, slow)
+    macd_line = ema_fast - ema_slow
+    return macd_line, macd_line  # simplified
+
+
+def parse_klines(raw):
     return {
-        "open": opens, "high": highs,
-        "low": lows, "close": closes, "volume": volumes
+        "open":   [float(k[1]) for k in raw],
+        "high":   [float(k[2]) for k in raw],
+        "low":    [float(k[3]) for k in raw],
+        "close":  [float(k[4]) for k in raw],
+        "volume": [float(k[5]) for k in raw],
     }
 
 
 class ScalpingStrategy:
     def __init__(self):
-        # EMA davrlar
-        self.ema_fast = 9
+        self.ema_fast = 5       # Tezroq EMA
+        self.ema_mid = 13
         self.ema_slow = 21
-        self.rsi_period = 14
-        self.bb_period = 20
-
-        # Signal praglar
-        self.rsi_oversold = 35     # BUY signal
-        self.rsi_overbought = 65   # SELL signal
-        self.min_signal_strength = 0.60  # Min kuch
+        self.rsi_period = 7     # Tezroq RSI
+        self.bb_period = 15
+        self.min_strength = 0.55  # Quyi chegara - ko'proq signal
 
     def analyze(self, symbol: str, klines: list, ticker: dict) -> Optional[Signal]:
-        """Teknik tahlil qilib signal qaytarish"""
-        if len(klines) < 25:
+        if len(klines) < 30:
             return None
 
-        candles = parse_klines(klines)
-        closes = candles["close"]
-        volumes = candles["volume"]
+        c = parse_klines(klines)
+        closes = c["close"]
+        volumes = c["volume"]
+        highs = c["high"]
+        lows = c["low"]
 
         price = closes[-1]
         vol_24h = float(ticker.get("quoteVolume", 0))
 
         # Indikatorlar
         fast = ema(closes, self.ema_fast)
+        mid = ema(closes, self.ema_mid)
         slow = ema(closes, self.ema_slow)
         rsi_val = rsi(closes, self.rsi_period)
         bb_upper, bb_mid, bb_lower = bollinger(closes, self.bb_period)
 
-        # Hajm o'rtachasi
-        avg_vol = sum(volumes[-10:]) / 10 if volumes else 0
-        last_vol = volumes[-1] if volumes else 0
-        vol_spike = last_vol > avg_vol * 1.5  # Hajm oshishi
+        # Hajm tahlil
+        avg_vol = sum(volumes[-5:]) / 5 if len(volumes) >= 5 else 1
+        last_vol = volumes[-1]
+        vol_spike = last_vol > avg_vol * 1.3
 
-        # Narx harakati
-        price_change_3 = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes) >= 4 else 0
+        # Momentum
+        mom_3 = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes) >= 4 else 0
+        mom_1 = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
 
-        signals = []
-        score = 0.0
+        # Sham tahlil (bullish/bearish)
+        last_candle_bull = closes[-1] > c["open"][-1]
+        prev_candle_bull = closes[-2] > c["open"][-2] if len(closes) >= 2 else False
 
-        # BUY signallari
+        # ── BUY signali ──────────────────────────────
+        buy_score = 0.0
         buy_reasons = []
-        if fast > slow:
-            score += 0.25
-            buy_reasons.append("EMA bullish")
-        if rsi_val < self.rsi_oversold:
-            score += 0.30
-            buy_reasons.append(f"RSI={rsi_val:.0f} oversold")
-        if price <= bb_lower * 1.002:
-            score += 0.25
-            buy_reasons.append("BB lower bounce")
-        if vol_spike:
-            score += 0.15
-            buy_reasons.append("hajm spike")
-        if price_change_3 > 0.1:
-            score += 0.05
-            buy_reasons.append("momentum+")
 
-        # SELL signallari
+        if fast > mid > slow:           # Trend yuqoriga
+            buy_score += 0.20
+            buy_reasons.append("trend+")
+        elif fast > slow:
+            buy_score += 0.10
+            buy_reasons.append("EMA+")
+
+        if rsi_val < 30:                # Kuchli oversold
+            buy_score += 0.30
+            buy_reasons.append(f"RSI={rsi_val:.0f}")
+        elif rsi_val < 40:
+            buy_score += 0.15
+            buy_reasons.append(f"RSI={rsi_val:.0f}")
+
+        if price <= bb_lower * 1.003:   # BB pastki chegara
+            buy_score += 0.25
+            buy_reasons.append("BB_lower")
+
+        if vol_spike:
+            buy_score += 0.15
+            buy_reasons.append("vol_spike")
+
+        if mom_1 > 0.05:               # 1 ta sham momentum
+            buy_score += 0.10
+            buy_reasons.append("mom+")
+
+        if last_candle_bull and prev_candle_bull:
+            buy_score += 0.05
+            buy_reasons.append("bulls")
+
+        # ── SELL signali ─────────────────────────────
         sell_score = 0.0
         sell_reasons = []
-        if fast < slow:
-            sell_score += 0.25
-            sell_reasons.append("EMA bearish")
-        if rsi_val > self.rsi_overbought:
+
+        if fast < mid < slow:
+            sell_score += 0.20
+            sell_reasons.append("trend-")
+        elif fast < slow:
+            sell_score += 0.10
+            sell_reasons.append("EMA-")
+
+        if rsi_val > 70:
             sell_score += 0.30
-            sell_reasons.append(f"RSI={rsi_val:.0f} overbought")
-        if price >= bb_upper * 0.998:
+            sell_reasons.append(f"RSI={rsi_val:.0f}")
+        elif rsi_val > 60:
+            sell_score += 0.15
+            sell_reasons.append(f"RSI={rsi_val:.0f}")
+
+        if price >= bb_upper * 0.997:
             sell_score += 0.25
-            sell_reasons.append("BB upper rejection")
+            sell_reasons.append("BB_upper")
+
         if vol_spike:
             sell_score += 0.15
-            sell_reasons.append("hajm spike")
-        if price_change_3 < -0.1:
+            sell_reasons.append("vol_spike")
+
+        if mom_1 < -0.05:
+            sell_score += 0.10
+            sell_reasons.append("mom-")
+
+        if not last_candle_bull and not prev_candle_bull:
             sell_score += 0.05
-            sell_reasons.append("momentum-")
+            sell_reasons.append("bears")
 
-        # Eng kuchli signalni tanlash
-        if score >= self.min_signal_strength and score >= sell_score:
-            return Signal(
-                symbol=symbol,
-                side="BUY",
-                strength=min(score, 1.0),
-                reason=", ".join(buy_reasons),
-                price=price,
-                volume_24h=vol_24h,
-            )
-        elif sell_score >= self.min_signal_strength and sell_score > score:
-            return Signal(
-                symbol=symbol,
-                side="SELL",
-                strength=min(sell_score, 1.0),
-                reason=", ".join(sell_reasons),
-                price=price,
-                volume_24h=vol_24h,
-            )
-
+        # Eng kuchli signal
+        if buy_score >= self.min_strength and buy_score >= sell_score:
+            return Signal(symbol, "BUY", min(buy_score, 1.0),
+                         ", ".join(buy_reasons), price, vol_24h)
+        elif sell_score >= self.min_strength and sell_score > buy_score:
+            return Signal(symbol, "SELL", min(sell_score, 1.0),
+                         ", ".join(sell_reasons), price, vol_24h)
         return None
