@@ -235,7 +235,7 @@ class ScalpingBot:
             if symbol in self.positions:
                 return
             try:
-                klines = await self.api.get_klines(symbol, "Min1", 50)
+                klines = await self.api.get_klines(symbol, "1m", 50)
                 ticker = await self.api.get_ticker(symbol)
                 if not klines or not ticker:
                     return
