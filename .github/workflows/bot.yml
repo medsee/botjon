@@ -15,6 +15,16 @@ jobs:
           python-version: '3.11'
       - name: Install
         run: pip install python-telegram-bot==21.0.1 aiohttp python-dotenv requests
+      - name: Test MEXC connection
+        run: |
+          echo "GitHub Actions IP:"
+          curl -s ifconfig.me
+          echo ""
+          echo "MEXC Futures API test:"
+          curl -s -o /dev/null -w "HTTP Status: %{http_code}" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Origin: https://futures.mexc.com" \
+            https://contract.mexc.com/api/v1/contract/ticker?symbol=BTC_USDT
       - name: Kill old bots
         run: |
           curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/deleteWebhook?drop_pending_updates=true"
