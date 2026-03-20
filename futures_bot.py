@@ -335,11 +335,11 @@ class FuturesBot:
             except Exception as e:
                 logger.debug(f"{symbol} xato: {e}")
 
-        # Parallel tahlil
-        for i in range(0, len(symbols), 10):
-            batch = symbols[i:i+10]
+        # Parallel tahlil - rate limit uchun sekinroq
+        for i in range(0, len(symbols), 5):
+            batch = symbols[i:i+5]
             await asyncio.gather(*[analyze(s) for s in batch])
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(1.0)
 
         if not signals:
             logger.info(f"Skan #{self.scan_count}: Signal yo'q | {len(self.positions)} pozitsiya | {balance:.2f} USDT")
@@ -383,7 +383,7 @@ class FuturesBot:
             try:
                 await self.monitor_positions()
 
-                if scan_timer >= 15:
+                if scan_timer >= 30:
                     await self.scan_and_trade()
                     scan_timer = 0
 
