@@ -1,7 +1,8 @@
 """
-Futures Scalping Strategy
+Futures Scalping Strategy - YANGILANGAN v2
 - Long va Short signallar
 - EMA + RSI + Bollinger + Volume + Trend
+- MACD + ADX (yangi)
 - Kuchli filtrlash - sliv yo'q
 """
 import logging
@@ -71,21 +72,88 @@ def atr(highs, lows, closes, period=14):
     return sum(trs[-period:]) / period
 
 
+def macd(prices, fast=12, slow=26, signal=9):
+    """MACD indikatori - trend o'zgarishini aniqlaydi"""
+    if len(prices) < slow + signal:
+        return 0, 0, 0
+
+    macd_values = []
+    for i in range(slow - 1, len(prices)):
+        ef = ema(prices[:i+1], fast)
+        es = ema(prices[:i+1], slow)
+        macd_values.append(ef - es)
+
+    if len(macd_values) < signal:
+        return 0, 0, 0
+
+    macd_line = macd_values[-1]
+    signal_line = ema(macd_values, signal)
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def adx(highs, lows, closes, period=14):
+    """ADX - trend kuchini o'lchaydi (0-100)
+    25+ = kuchli trend, 20- = zaif trend"""
+    if len(closes) < period * 2:
+        return 0, 0, 0
+
+    dm_plus = []
+    dm_minus = []
+    trs = []
+
+    for i in range(1, len(closes)):
+        h_diff = highs[i] - highs[i-1]
+        l_diff = lows[i-1] - lows[i]
+        dm_plus.append(max(h_diff, 0) if h_diff > l_diff else 0)
+        dm_minus.append(max(l_diff, 0) if l_diff > h_diff else 0)
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i-1]),
+            abs(lows[i] - closes[i-1])
+        )
+        trs.append(tr)
+
+    def smooth(data, p):
+        if len(data) < p:
+            return sum(data) / len(data) if data else 0
+        s = sum(data[:p])
+        for d in data[p:]:
+            s = s - s / p + d
+        return s / p
+
+    tr_smooth = smooth(trs, period)
+    dmp_smooth = smooth(dm_plus, period)
+    dmm_smooth = smooth(dm_minus, period)
+
+    if tr_smooth == 0:
+        return 0, 0, 0
+
+    di_plus = 100 * dmp_smooth / tr_smooth
+    di_minus = 100 * dmm_smooth / tr_smooth
+
+    di_sum = di_plus + di_minus
+    if di_sum == 0:
+        return 0, di_plus, di_minus
+
+    dx = 100 * abs(di_plus - di_minus) / di_sum
+    return dx, di_plus, di_minus
+
+
 class FuturesStrategy:
     def __init__(self):
         self.ema_fast = 5
         self.ema_mid = 13
         self.ema_slow = 21
-        self.ema_trend = 50   # Trend filtri
+        self.ema_trend = 50
         self.rsi_period = 7
         self.bb_period = 20
-        self.min_strength = 0.70  # Juda kuchli signal kerak
+        self.min_strength = 0.60  # 0.70 dan pasaytirildi: ko'proq savdo uchun
 
     def parse_klines(self, raw):
         if not raw:
             return None
         try:
-            # MEXC Futures klines formati
             if isinstance(raw[0], dict):
                 return {
                     "open":   [float(k.get("open", 0)) for k in raw],
@@ -118,6 +186,7 @@ class FuturesStrategy:
         highs = c["high"]
         lows = c["low"]
         volumes = c["volume"]
+        opens = c["open"]
 
         price = closes[-1]
         if price <= 0:
@@ -125,7 +194,7 @@ class FuturesStrategy:
 
         vol_24h = float(ticker.get("volume24", ticker.get("quoteVolume", 0)))
 
-        # Indikatorlar
+        # ── Asosiy indikatorlar ──────────────────────────────
         fast = ema(closes, self.ema_fast)
         mid = ema(closes, self.ema_mid)
         slow = ema(closes, self.ema_slow)
@@ -135,117 +204,151 @@ class FuturesStrategy:
         atr_val = atr(highs, lows, closes, 14)
         atr_pct = atr_val / price * 100
 
-        # Juda kuchli o'zgarish bo'lsa kirma (pump/dump)
-        if atr_pct > 3.0:
+        # MACD (yangi)
+        macd_line, signal_line, histogram = macd(closes, 12, 26, 9)
+        macd_bullish = macd_line > signal_line
+        macd_bearish = macd_line < signal_line
+        macd_cross_up = histogram > 0
+        macd_cross_dn = histogram < 0
+
+        # ADX (yangi)
+        adx_val, di_plus, di_minus = adx(highs, lows, closes, 14)
+        trend_strong = adx_val >= 20
+        trend_very_strong = adx_val >= 30
+
+        # Pump/dump filtri - biroz kengroq
+        if atr_pct > 3.5:
             return None
 
         # Hajm
         avg_vol = sum(volumes[-10:]) / 10 if len(volumes) >= 10 else 1
         last_vol = volumes[-1]
-        vol_spike = last_vol > avg_vol * 1.8  # Kuchli hajm
+        vol_spike = last_vol > avg_vol * 1.5  # 1.8 dan 1.5 ga
 
         # Momentum
         mom_5 = (closes[-1] - closes[-6]) / closes[-6] * 100 if len(closes) >= 6 else 0
         mom_1 = (closes[-1] - closes[-2]) / closes[-2] * 100 if len(closes) >= 2 else 0
 
         # Shamlar tahlil
-        last_bull = closes[-1] > c["open"][-1]
-        prev_bull = closes[-2] > c["open"][-2] if len(closes) >= 2 else False
-        prev2_bull = closes[-3] > c["open"][-3] if len(closes) >= 3 else False
+        last_bull = closes[-1] > opens[-1]
+        prev_bull = closes[-2] > opens[-2] if len(closes) >= 2 else False
+        prev2_bull = closes[-3] > opens[-3] if len(closes) >= 3 else False
 
-        # ── LONG signali ──────────────────────────────────────
+        # ════════════════════════════════════════════════════
+        # LONG SIGNAL
+        # ════════════════════════════════════════════════════
         long_score = 0.0
         long_reasons = []
 
-        # Asosiy trend (muhim filtr)
         if price > trend:
-            long_score += 0.15
-            long_reasons.append("trend yuqori")
+            long_score += 0.12
+            long_reasons.append("📈Trend")
 
-        # EMA trend
         if fast > mid > slow:
-            long_score += 0.20
-            long_reasons.append("EMA bullish")
+            long_score += 0.15
+            long_reasons.append("EMA🟢")
         elif fast > slow:
-            long_score += 0.08
+            long_score += 0.07
 
-        # RSI oversold
         if rsi_val < 20:
-            long_score += 0.35
-            long_reasons.append(f"RSI={rsi_val:.0f} kuchli")
+            long_score += 0.30
+            long_reasons.append(f"RSI={rsi_val:.0f}🔥")
         elif rsi_val < 30:
-            long_score += 0.20
+            long_score += 0.18
             long_reasons.append(f"RSI={rsi_val:.0f}")
         elif rsi_val > 65:
-            long_score = 0  # Overbought - LONG kirma
+            long_score = 0
 
-        # Bollinger
         if price <= bb_lower * 1.003:
-            long_score += 0.20
-            long_reasons.append("BB_lower")
+            long_score += 0.18
+            long_reasons.append("BB📉")
 
-        # Hajm
-        if vol_spike:
-            long_score += 0.15
-            long_reasons.append("vol+")
-
-        # Momentum
-        if mom_1 > 0.1 and mom_5 > 0:
-            long_score += 0.10
-            long_reasons.append("mom+")
-
-        # 3 ta bull sham ketma-ket
-        if last_bull and prev_bull and prev2_bull:
+        # MACD
+        if macd_bullish and macd_cross_up:
+            long_score += 0.18
+            long_reasons.append("MACD🟢")
+        elif macd_bullish:
             long_score += 0.08
-            long_reasons.append("3xbull")
+            long_reasons.append("MACD+")
 
-        # ── SHORT signali ─────────────────────────────────────
+        # ADX
+        if trend_very_strong and di_plus > di_minus:
+            long_score += 0.15
+            long_reasons.append(f"ADX={adx_val:.0f}💪")
+        elif trend_strong and di_plus > di_minus:
+            long_score += 0.08
+            long_reasons.append(f"ADX={adx_val:.0f}")
+
+        if vol_spike:
+            long_score += 0.12
+            long_reasons.append("Vol⬆️")
+
+        if mom_1 > 0.1 and mom_5 > 0:
+            long_score += 0.08
+            long_reasons.append("Mom+")
+
+        if last_bull and prev_bull and prev2_bull:
+            long_score += 0.07
+            long_reasons.append("3🕯🟢")
+
+        # ════════════════════════════════════════════════════
+        # SHORT SIGNAL
+        # ════════════════════════════════════════════════════
         short_score = 0.0
         short_reasons = []
 
-        # Asosiy trend
         if price < trend:
-            short_score += 0.15
-            short_reasons.append("trend pastki")
+            short_score += 0.12
+            short_reasons.append("📉Trend")
 
-        # EMA trend
         if fast < mid < slow:
-            short_score += 0.20
-            short_reasons.append("EMA bearish")
+            short_score += 0.15
+            short_reasons.append("EMA🔴")
         elif fast < slow:
-            short_score += 0.08
+            short_score += 0.07
 
-        # RSI overbought
         if rsi_val > 80:
-            short_score += 0.35
-            short_reasons.append(f"RSI={rsi_val:.0f} kuchli")
+            short_score += 0.30
+            short_reasons.append(f"RSI={rsi_val:.0f}🔥")
         elif rsi_val > 70:
-            short_score += 0.20
+            short_score += 0.18
             short_reasons.append(f"RSI={rsi_val:.0f}")
         elif rsi_val < 35:
-            short_score = 0  # Oversold - SHORT kirma
+            short_score = 0
 
-        # Bollinger
         if price >= bb_upper * 0.997:
-            short_score += 0.20
-            short_reasons.append("BB_upper")
+            short_score += 0.18
+            short_reasons.append("BB📈")
 
-        # Hajm
-        if vol_spike:
-            short_score += 0.15
-            short_reasons.append("vol+")
-
-        # Momentum
-        if mom_1 < -0.1 and mom_5 < 0:
-            short_score += 0.10
-            short_reasons.append("mom-")
-
-        # 3 ta bear sham
-        if not last_bull and not prev_bull and not prev2_bull:
+        # MACD
+        if macd_bearish and macd_cross_dn:
+            short_score += 0.18
+            short_reasons.append("MACD🔴")
+        elif macd_bearish:
             short_score += 0.08
-            short_reasons.append("3xbear")
+            short_reasons.append("MACD-")
 
-        # Eng kuchli signalni tanlash
+        # ADX
+        if trend_very_strong and di_minus > di_plus:
+            short_score += 0.15
+            short_reasons.append(f"ADX={adx_val:.0f}💪")
+        elif trend_strong and di_minus > di_plus:
+            short_score += 0.08
+            short_reasons.append(f"ADX={adx_val:.0f}")
+
+        if vol_spike:
+            short_score += 0.12
+            short_reasons.append("Vol⬆️")
+
+        if mom_1 < -0.1 and mom_5 < 0:
+            short_score += 0.08
+            short_reasons.append("Mom-")
+
+        if not last_bull and not prev_bull and not prev2_bull:
+            short_score += 0.07
+            short_reasons.append("3🕯🔴")
+
+        # ── Eng kuchli signalni tanlash ──────────────────────
         if long_score >= self.min_strength and long_score >= short_score:
             return FuturesSignal(
                 symbol=symbol, side="LONG",
