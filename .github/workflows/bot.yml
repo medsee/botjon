@@ -1,12 +1,13 @@
 name: MEXC Scalping Bot
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
 
 jobs:
   bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
@@ -14,6 +15,10 @@ jobs:
           python-version: '3.11'
       - name: Install
         run: pip install python-telegram-bot==21.0.1 aiohttp python-dotenv
+      - name: Kill old bots
+        run: |
+          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/deleteWebhook" > /dev/null
+          sleep 3
       - name: Run Bot
         run: python main.py
         env:
