@@ -51,18 +51,29 @@ class MEXCFutures:
         for attempt in range(3):
             try:
                 r    = self._session.get(url, headers=headers, timeout=15)
-                text = r.text
-                if not text.strip():
-                    time.sleep(1); continue
-                data = json.loads(text)
+                text = r.text.strip()
+                if not text:
+                    logger.error(f"GET {endpoint} attempt {attempt+1}: Bo'sh javob (HTTP {r.status_code})")
+                    time.sleep(1)
+                    continue
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError as je:
+                    logger.error(f"GET {endpoint} attempt {attempt+1}: JSON xato: {je} | Raw: '{text[:200]}'")
+                    time.sleep(1)
+                    continue
                 if data.get("success") is True or data.get("code") == 0:
                     return data.get("data", data)
                 if data.get("code") == 510:
-                    time.sleep(2); continue
-                logger.error(f"GET {endpoint}: {data}")
+                    time.sleep(2)
+                    continue
+                logger.error(f"GET {endpoint}: code={data.get('code')} msg={data.get('message','?')}")
                 return None
+            except requests.exceptions.Timeout:
+                logger.error(f"GET {endpoint} attempt {attempt+1}: Timeout")
+                time.sleep(1)
             except Exception as e:
-                logger.error(f"GET {endpoint} attempt {attempt+1}: {e}")
+                logger.error(f"GET {endpoint} attempt {attempt+1}: {type(e).__name__}: {e}")
                 time.sleep(1)
         return None
 
@@ -74,18 +85,46 @@ class MEXCFutures:
         for attempt in range(3):
             try:
                 r    = self._session.post(url, headers=headers, data=body_str, timeout=15)
-                text = r.text
-                logger.debug(f"POST {endpoint} [{r.status_code}]: {text[:300]}")
-                if not text.strip():
-                    logger.warning(f"POST {endpoint} bo'sh javob attempt {attempt+1}, HTTP {r.status_code}")
-                    time.sleep(1); continue
-                data = json.loads(text)
+                text = r.text.strip()
+                logger.info(f"POST {endpoint} [{r.status_code}]: '{text[:300]}'")
+
+                if not text:
+                    logger.error(f"POST {endpoint} attempt {attempt+1}: Server bo'sh javob qaytardi (HTTP {r.status_code}). "
+                                 f"Sabab: noto'g'ri API key, IP bloklash, yoki Futures API ruxsati yo'q.")
+                    time.sleep(2)
+                    continue
+
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError as je:
+                    logger.error(f"POST {endpoint} attempt {attempt+1}: JSON parse xato: {je} | Raw: '{text[:200]}'")
+                    time.sleep(1)
+                    continue
+
                 if data.get("success") is True or data.get("code") == 0:
                     return data.get("data", data)
-                logger.error(f"POST {endpoint}: code={data.get('code')} msg={data.get('message','?')}")
+
+                code = data.get("code")
+                msg  = data.get("message") or data.get("msg", "?")
+                logger.error(f"POST {endpoint}: code={code} msg={msg}")
+
+                # Qayta urinish kerak bo'lmagan xatolar
+                if code in (10007, 10008, 10009, 1337):  # Auth xatolar
+                    logger.error("⛔ API autentifikatsiya xatosi! API key va Secret kalitni tekshiring.")
+                    return None
+                if code == 510:   # Rate limit
+                    time.sleep(2)
+                    continue
                 return None
+
+            except requests.exceptions.Timeout:
+                logger.error(f"POST {endpoint} attempt {attempt+1}: Timeout (15s)")
+                time.sleep(1)
+            except requests.exceptions.ConnectionError as ce:
+                logger.error(f"POST {endpoint} attempt {attempt+1}: Connection error: {ce}")
+                time.sleep(2)
             except Exception as e:
-                logger.error(f"POST {endpoint} attempt {attempt+1}: {e}")
+                logger.error(f"POST {endpoint} attempt {attempt+1}: Kutilmagan xato: {type(e).__name__}: {e}")
                 time.sleep(1)
         return None
 
