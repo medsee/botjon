@@ -1,9 +1,7 @@
 """
-MEXC Futures API Client - v3
-Tuzatildi:
-1. set_leverage - positionId muammosi hal qilindi (leverage ochishdan oldin o'rnatiladi)
-2. order/submit - to'g'ri parametrlar
-3. Klines format to'liq qo'llab-quvvatlanadi
+MEXC Futures API Client - v4 FINAL
+Sign algoritmi to'liq qayta yozildi
+MEXC docs: https://mxcdevelop.github.io/apidocs/contract_v1_en/
 """
 import asyncio
 import aiohttp
@@ -29,147 +27,152 @@ class MEXCFutures:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=20),
             )
         return self.session
 
-    def _get_headers(self, params_str: str = "") -> dict:
-        timestamp = str(int(time.time() * 1000))
-        sign_str  = self.api_key + timestamp + params_str
-        signature = hmac.new(
+    def _sign(self, timestamp: str, params_str: str) -> str:
+        """
+        MEXC Futures sign:
+        signature = HMAC-SHA256(api_key + timestamp + params_str, secret_key)
+        """
+        raw = self.api_key + timestamp + params_str
+        return hmac.new(
             self.secret_key.encode("utf-8"),
-            sign_str.encode("utf-8"),
+            raw.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
+
+    def _headers(self, params_str: str = "") -> dict:
+        ts  = str(int(time.time() * 1000))
+        sig = self._sign(ts, params_str)
         return {
-            "ApiKey":       self.api_key,
-            "Request-Time": timestamp,
-            "Signature":    signature,
-            "Content-Type": "application/json",
+            "ApiKey":         self.api_key,
+            "Request-Time":   ts,
+            "Signature":      sig,
+            "Content-Type":   "application/json",
         }
 
-    async def _get(self, endpoint: str, params: dict = None, retry: int = 3) -> Optional[dict]:
-        for attempt in range(retry):
+    # ── GET ─────────────────────────────────────────────────
+    async def _get(self, endpoint: str, params: dict = None) -> Optional[any]:
+        params = params or {}
+        query  = urlencode(sorted(params.items()))   # sorted — deterministik
+        headers = self._headers(query)
+        url = f"{MEXC_FUTURES_BASE}{endpoint}"
+        if query:
+            url += f"?{query}"
+
+        for attempt in range(3):
             try:
-                params = params or {}
-                query  = urlencode(params)
-                headers = self._get_headers(query)
-                s   = await self._get_session()
-                url = f"{MEXC_FUTURES_BASE}{endpoint}"
-                if query:
-                    url += f"?{query}"
+                s = await self._get_session()
                 async with s.get(url, headers=headers) as r:
                     text = await r.text()
-                    if not text:
-                        await asyncio.sleep(1)
-                        continue
+                    if not text.strip():
+                        await asyncio.sleep(1); continue
                     data = json.loads(text)
-                    if data.get("success") is True or data.get("code") == 0:
+                    code = data.get("code", -1)
+                    if data.get("success") is True or code == 0:
                         return data.get("data", data)
-                    if data.get("code") == 510:
-                        await asyncio.sleep(2)
-                        continue
-                    logger.error(f"GET error {endpoint}: {data}")
+                    if code == 510:   # rate limit
+                        await asyncio.sleep(2); continue
+                    logger.error(f"GET {endpoint}: {data}")
                     return None
             except Exception as e:
-                logger.error(f"GET exception {endpoint}: {e}")
+                logger.error(f"GET {endpoint} attempt {attempt+1}: {e}")
                 await asyncio.sleep(1)
         return None
 
-    async def _post(self, endpoint: str, body: dict = None, retry: int = 3) -> Optional[dict]:
-        for attempt in range(retry):
+    # ── POST ────────────────────────────────────────────────
+    async def _post(self, endpoint: str, body: dict = None) -> Optional[any]:
+        body     = body or {}
+        # JSON string — sign uchun ham, body uchun ham bir xil
+        body_str = json.dumps(body, separators=(',', ':'), ensure_ascii=False)
+        headers  = self._headers(body_str)
+        url      = f"{MEXC_FUTURES_BASE}{endpoint}"
+
+        for attempt in range(3):
             try:
-                body     = body or {}
-                body_str = json.dumps(body, separators=(',', ':'))
-                headers  = self._get_headers(body_str)
-                s   = await self._get_session()
-                url = f"{MEXC_FUTURES_BASE}{endpoint}"
-                async with s.post(url, headers=headers, data=body_str) as r:
-                    text = await r.text()
-                    if not text:
-                        logger.warning(f"POST bo'sh javob {endpoint}, retry {attempt+1}")
-                        await asyncio.sleep(1)
-                        continue
+                s = await self._get_session()
+                async with s.post(url, headers=headers, data=body_str.encode("utf-8")) as r:
+                    status = r.status
+                    text   = await r.text()
+                    logger.debug(f"POST {endpoint} [{status}]: {text[:200]}")
+
+                    if not text.strip():
+                        logger.warning(f"POST {endpoint} bo'sh javob (attempt {attempt+1}), HTTP {status}")
+                        await asyncio.sleep(1); continue
+
                     data = json.loads(text)
-                    if data.get("success") is True or data.get("code") == 0:
+                    code = data.get("code", -1)
+                    if data.get("success") is True or code == 0:
                         return data.get("data", data)
-                    logger.error(f"POST error {endpoint}: {data}")
+
+                    logger.error(f"POST {endpoint}: code={code} msg={data.get('message','?')}")
                     return None
             except Exception as e:
-                logger.error(f"POST exception {endpoint} attempt {attempt+1}: {e}")
+                logger.error(f"POST {endpoint} attempt {attempt+1}: {e}")
                 await asyncio.sleep(1)
         return None
 
-    # ── PUBLIC ──────────────────────────────────────────────────
+    # ── PUBLIC ──────────────────────────────────────────────
     async def get_ticker(self, symbol: str) -> Optional[dict]:
         r = await self._get("/api/v1/contract/ticker", {"symbol": symbol})
-        if r and isinstance(r, list):
+        if isinstance(r, list):
             return r[0] if r else None
         return r
 
     async def get_all_tickers(self) -> list:
         r = await self._get("/api/v1/contract/ticker")
-        if isinstance(r, list):
-            return r
-        return []
+        return r if isinstance(r, list) else []
 
     async def get_klines(self, symbol: str, interval="Min1", limit=50) -> list:
         r = await self._get(f"/api/v1/contract/kline/{symbol}", {
-            "interval": interval,
-            "limit": limit
+            "interval": interval, "limit": limit
         })
-
         if not r:
             return []
 
-        # Format: list of dicts
+        # list of dicts
         if isinstance(r, list):
             if r and isinstance(r[0], dict):
                 return r
             if r and isinstance(r[0], (list, tuple)):
-                result = []
+                out = []
                 for k in r:
                     try:
-                        result.append({
-                            "open": float(k[1]), "high": float(k[2]),
-                            "low":  float(k[3]), "close": float(k[4]),
-                            "vol":  float(k[5]) if len(k) > 5 else 0,
-                        })
-                    except:
-                        pass
-                return result
+                        out.append({"open": float(k[1]), "high": float(k[2]),
+                                    "low":  float(k[3]), "close": float(k[4]),
+                                    "vol":  float(k[5]) if len(k) > 5 else 0})
+                    except: pass
+                return out
             return []
 
-        # Format: dict with arrays (MEXC asosiy)
+        # dict of arrays (MEXC asosiy format)
         if isinstance(r, dict):
-            opens  = r.get("open",   r.get("opens",  []))
-            highs  = r.get("high",   r.get("highs",  []))
-            lows   = r.get("low",    r.get("lows",   []))
-            closes = r.get("close",  r.get("closes", []))
-            vols   = r.get("vol",    r.get("volume", r.get("volumes", [])))
-
+            closes = r.get("close", r.get("closes", []))
+            opens  = r.get("open",  r.get("opens",  []))
+            highs  = r.get("high",  r.get("highs",  []))
+            lows   = r.get("low",   r.get("lows",   []))
+            vols   = r.get("vol",   r.get("volume", []))
             if not closes:
                 logger.warning(f"Klines bo'sh: {symbol} keys={list(r.keys())}")
                 return []
-
-            result = []
+            out = []
             for i in range(len(closes)):
                 try:
-                    result.append({
+                    out.append({
                         "open":  float(opens[i])  if i < len(opens)  else float(closes[i]),
                         "high":  float(highs[i])  if i < len(highs)  else float(closes[i]),
                         "low":   float(lows[i])   if i < len(lows)   else float(closes[i]),
                         "close": float(closes[i]),
                         "vol":   float(vols[i])   if i < len(vols)   else 0,
                     })
-                except:
-                    pass
-            return result
-
+                except: pass
+            return out
         return []
 
-    # ── PRIVATE ─────────────────────────────────────────────────
-    async def get_account(self) -> Optional[dict]:
+    # ── PRIVATE ─────────────────────────────────────────────
+    async def get_account(self) -> Optional[any]:
         return await self._get("/api/v1/private/account/assets")
 
     async def get_balance(self) -> float:
@@ -185,92 +188,51 @@ class MEXCFutures:
         return 0.0
 
     async def set_leverage(self, symbol: str, leverage: int = 3) -> bool:
-        """
-        MEXC leverage o'rnatish:
-        - Avval pozitsiya borligini tekshir
-        - positionId bilan yoki symbolgina yuborish
-        """
-        # Usul 1: faqat symbol bilan (agar pozitsiya yo'q bo'lsa)
-        r = await self._post("/api/v1/private/position/change_leverage", {
-            "symbol":   symbol,
-            "leverage": leverage,
-            "openType": 1,         # Cross margin
-            "positionType": 1,     # Long
-        })
-        if r is not None:
-            return True
+        """Leverage o'rnatish — xato bo'lsa ham davom etamiz"""
+        for pos_type in [1, 2]:   # 1=Long, 2=Short
+            await self._post("/api/v1/private/position/change_leverage", {
+                "symbol":       symbol,
+                "leverage":     leverage,
+                "openType":     1,
+                "positionType": pos_type,
+            })
+        return True   # Har doim True — order bloklanmasin
 
-        # Usul 2: Short uchun ham
-        r2 = await self._post("/api/v1/private/position/change_leverage", {
+    async def _submit_order(self, symbol: str, side: int, vol: int) -> Optional[dict]:
+        """
+        MEXC Futures order submit
+        side: 1=OpenLong, 2=CloseLong, 3=OpenShort, 4=CloseShort
+        type: 5=Market
+        openType: 1=Cross, 2=Isolated
+        """
+        return await self._post("/api/v1/private/order/submit", {
             "symbol":   symbol,
-            "leverage": leverage,
+            "price":    "0",        # Market order uchun string "0"
+            "vol":      vol,
+            "leverage": self.leverage,
+            "side":     side,
+            "type":     5,
             "openType": 1,
-            "positionType": 2,     # Short
         })
-        # Leverage o'rnatilmasa ham davom etamiz — order bo'ladi
-        return True
 
     async def open_long(self, symbol: str, vol: int) -> Optional[dict]:
-        """Long ochish — Market order, Cross margin"""
-        return await self._post("/api/v1/private/order/submit", {
-            "symbol":   symbol,
-            "price":    0,
-            "vol":      vol,
-            "leverage": self.leverage,
-            "side":     1,          # 1=Open Long
-            "type":     5,          # 5=Market
-            "openType": 1,          # 1=Cross margin
-            "reduceOnly": False,
-        })
+        return await self._submit_order(symbol, 1, vol)
 
     async def open_short(self, symbol: str, vol: int) -> Optional[dict]:
-        """Short ochish — Market order, Cross margin"""
-        return await self._post("/api/v1/private/order/submit", {
-            "symbol":   symbol,
-            "price":    0,
-            "vol":      vol,
-            "leverage": self.leverage,
-            "side":     3,          # 3=Open Short
-            "type":     5,
-            "openType": 1,
-            "reduceOnly": False,
-        })
+        return await self._submit_order(symbol, 3, vol)
 
     async def close_long(self, symbol: str, vol: int) -> Optional[dict]:
-        """Long yopish"""
-        return await self._post("/api/v1/private/order/submit", {
-            "symbol":   symbol,
-            "price":    0,
-            "vol":      vol,
-            "leverage": self.leverage,
-            "side":     2,          # 2=Close Long
-            "type":     5,
-            "openType": 1,
-            "reduceOnly": True,
-        })
+        return await self._submit_order(symbol, 2, vol)
 
     async def close_short(self, symbol: str, vol: int) -> Optional[dict]:
-        """Short yopish"""
-        return await self._post("/api/v1/private/order/submit", {
-            "symbol":   symbol,
-            "price":    0,
-            "vol":      vol,
-            "leverage": self.leverage,
-            "side":     4,          # 4=Close Short
-            "type":     5,
-            "openType": 1,
-            "reduceOnly": True,
-        })
+        return await self._submit_order(symbol, 4, vol)
 
     async def get_positions(self) -> list:
         r = await self._get("/api/v1/private/position/open_positions")
-        if isinstance(r, list):
-            return r
-        return []
+        return r if isinstance(r, list) else []
 
     async def get_position(self, symbol: str) -> Optional[dict]:
-        positions = await self.get_positions()
-        for p in positions:
+        for p in await self.get_positions():
             if p.get("symbol") == symbol:
                 return p
         return None
