@@ -9,16 +9,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install
         run: pip install python-telegram-bot==21.0.1 aiohttp python-dotenv
       - name: Kill old bots
         run: |
-          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/deleteWebhook" > /dev/null
-          sleep 3
+          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/deleteWebhook?drop_pending_updates=true"
+          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/close"
+          sleep 15
       - name: Run Bot
         run: python main.py
         env:
