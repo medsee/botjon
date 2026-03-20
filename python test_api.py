@@ -1,60 +1,63 @@
 """
-API test skripti - botni ishga tushirishdan oldin tekshiring
+MEXC Futures API - To'liq debug test
 python test_api.py
 """
-import asyncio
-import os
+import asyncio, os, json, hmac, hashlib, time
+import aiohttp
 from dotenv import load_dotenv
-from mexc_futures import MEXCFutures
-
 load_dotenv()
 
+API_KEY    = os.getenv("MEXC_API_KEY", "").strip()
+SECRET_KEY = os.getenv("MEXC_SECRET_KEY", "").strip()
+BASE       = "https://contract.mexc.com"
+
+def make_sign(ts, params_str):
+    raw = API_KEY + ts + params_str
+    return hmac.new(SECRET_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
+
+def make_headers(params_str=""):
+    ts  = str(int(time.time() * 1000))
+    sig = make_sign(ts, params_str)
+    return {
+        "ApiKey":       API_KEY,
+        "Request-Time": ts,
+        "Signature":    sig,
+        "Content-Type": "application/json",
+    }
+
 async def test():
-    api = MEXCFutures(
-        api_key=os.getenv("MEXC_API_KEY", ""),
-        secret_key=os.getenv("MEXC_SECRET_KEY", ""),
-    )
+    async with aiohttp.ClientSession() as s:
+        print("="*60)
+        print(f"API_KEY: {API_KEY[:8]}..." if API_KEY else "❌ API_KEY YO'Q!")
+        print(f"SECRET:  {SECRET_KEY[:8]}..." if SECRET_KEY else "❌ SECRET YO'Q!")
+        print("="*60)
 
-    print("=" * 50)
-    print("MEXC Futures API Test")
-    print("=" * 50)
+        # 1. Balans tekshiruvi
+        print("\n1. GET balance...")
+        h = make_headers("")
+        async with s.get(f"{BASE}/api/v1/private/account/assets", headers=h) as r:
+            text = await r.text()
+            print(f"   HTTP {r.status}: {text[:300]}")
 
-    # 1. Balans
-    print("\n1️⃣  Balans tekshiruvi...")
-    balance = await api.get_balance()
-    if balance > 0:
-        print(f"   ✅ Balans: {balance:.4f} USDT")
-    else:
-        print(f"   ❌ Balans 0 — API kalitlari noto'g'ri yoki Futures hisob yo'q!")
+        # 2. Order submit - asosiy test
+        print("\n2. POST order/submit (BTC_USDT LONG 1 lot)...")
+        body     = {"symbol":"BTC_USDT","price":"0","vol":1,"leverage":3,"side":1,"type":5,"openType":1}
+        body_str = json.dumps(body, separators=(',',':'))
+        h2 = make_headers(body_str)
+        print(f"   Yuborilayotgan: {body_str}")
+        async with s.post(f"{BASE}/api/v1/private/order/submit",
+                          headers=h2, data=body_str.encode("utf-8")) as r:
+            text = await r.text()
+            print(f"   HTTP {r.status}: '{text[:500]}'")
+            print(f"   Content-Type: {r.headers.get('content-type','?')}")
 
-    # 2. Ticker
-    print("\n2️⃣  Ticker tekshiruvi (BTC_USDT)...")
-    ticker = await api.get_ticker("BTC_USDT")
-    if ticker:
-        price = ticker.get("lastPrice", ticker.get("last", "?"))
-        print(f"   ✅ BTC narxi: ${price}")
-    else:
-        print("   ❌ Ticker olishda xato")
+        # 3. Open positions
+        print("\n3. GET open_positions...")
+        h3 = make_headers("")
+        async with s.get(f"{BASE}/api/v1/private/position/open_positions", headers=h3) as r:
+            text = await r.text()
+            print(f"   HTTP {r.status}: {text[:300]}")
 
-    # 3. Klines
-    print("\n3️⃣  Klines tekshiruvi (BTC_USDT)...")
-    klines = await api.get_klines("BTC_USDT", "Min1", 10)
-    if klines and len(klines) >= 5:
-        print(f"   ✅ Klines: {len(klines)} ta sham | so'nggi close: {klines[-1].get('close')}")
-    else:
-        print(f"   ❌ Klines xato: {klines}")
-
-    # 4. Leverage (write test)
-    print("\n4️⃣  Leverage o'rnatish (BTC_USDT, 3x)...")
-    lev = await api.set_leverage("BTC_USDT", 3)
-    print(f"   {'✅' if lev else '⚠️'} Leverage: {'OK' if lev else 'Xato (lekin order ochilishi mumkin)'}")
-
-    await api.close()
-    print("\n" + "=" * 50)
-    if balance > 0 and ticker and klines:
-        print("✅ API to'g'ri ishlayapti! Bot ishga tushishga tayyor.")
-    else:
-        print("❌ Muammo bor — yuqoridagi xatolarni tekshiring.")
-    print("=" * 50)
+    print("\nTest yakunlandi!")
 
 asyncio.run(test())
