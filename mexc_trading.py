@@ -128,11 +128,26 @@ class MEXCTrading:
         self, symbol: str, side: str, quantity: float,
         order_type: str = "MARKET"
     ) -> Optional[dict]:
+        # Har juftlik uchun to'g'ri kasr soni
+        info = await self.get_symbol_info(symbol)
+        step_size = 0.01
+
+        if info:
+            for f in info.get("filters", []):
+                if f.get("filterType") == "LOT_SIZE":
+                    step_size = float(f.get("stepSize", 0.01))
+                    min_qty = float(f.get("minQty", 0))
+                    if quantity < min_qty:
+                        quantity = min_qty
+                    break
+
+        qty_str = self._format_qty(quantity, step_size)
+
         params = {
             "symbol": symbol,
             "side": side,
             "type": order_type,
-            "quantity": f"{quantity:.6f}",
+            "quantity": qty_str,
         }
         return await self._private("POST", "/api/v3/order", params)
 
@@ -151,3 +166,19 @@ class MEXCTrading:
     async def close(self):
         if self.session and not self.session.closed:
             await self.session.close()
+
+
+    async def get_symbol_info(self, symbol: str) -> Optional[dict]:
+        info = await self._public("/api/v3/exchangeInfo", {"symbol": symbol})
+        if not info:
+            return None
+        for s in info.get("symbols", []):
+            if s["symbol"] == symbol:
+                return s
+        return None
+
+    def _format_qty(self, quantity: float, step_size: float) -> str:
+        if step_size >= 1:
+            return str(int(quantity))
+        decimals = len(str(step_size).rstrip('0').split('.')[-1])
+        return f"{quantity:.{decimals}f}"
