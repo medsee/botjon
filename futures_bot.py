@@ -65,8 +65,8 @@ class FuturesBot:
         self.leverage = 2
         self.max_positions = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
         self.trade_pct = float(os.getenv("MAX_TRADE_PCT", "0.05"))  # 5% margin
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "0.008"))   # 0.8% narxdan
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "0.015"))  # 1.5% narxdan
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "0.010"))   # 1.0% narxdan
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "0.025"))  # 2.5% narxdan (2.5:1 RR)
         self.max_daily_loss_pct = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))  # 5%
         self.max_hold_seconds = int(os.getenv("MAX_HOLD_SECONDS", "300"))
 
@@ -178,15 +178,21 @@ class FuturesBot:
         )
         self.positions[signal.symbol] = pos
 
-        side_emoji = "LONG" if signal.side == "LONG" else "SHORT"
+        if signal.side == "LONG":
+            side_emoji = "🚀 LONG"
+            side_icon = "🟢"
+        else:
+            side_emoji = "🩸 SHORT"
+            side_icon = "🔴"
         await self.notify(
-            f"*{side_emoji} OCHILDI* `{signal.symbol}`\n"
-            f"Leverage: `{self.leverage}x`\n"
-            f"Narx: `${signal.price:,.4f}`\n"
-            f"Hajm: `{vol}` kontakt\n"
-            f"Margin: `${margin:.2f} USDT`\n"
-            f"TP: `${tp:,.4f}` | SL: `${sl:,.4f}`\n"
-            f"Signal: _{signal.reason}_ ({signal.strength:.0%})"
+            f"{side_icon} *{side_emoji} OCHILDI* {side_icon}\n"
+            f"💎 Juftlik: `{signal.symbol}`\n"
+            f"⚡ Leverage: `{self.leverage}x`\n"
+            f"💰 Narx: `${signal.price:,.4f}`\n"
+            f"📦 Hajm: `{vol}` kontakt\n"
+            f"🏦 Margin: `${margin:.2f} USDT`\n"
+            f"🎯 TP: `${tp:,.4f}` | 🛡 SL: `${sl:,.4f}`\n"
+            f"📊 Signal: _{signal.reason}_ ({signal.strength:.0%})"
         )
         return True
 
@@ -219,15 +225,21 @@ class FuturesBot:
         total = self.win_count + self.loss_count
         wr = self.win_count / total * 100 if total > 0 else 0
         sign = "+" if pnl_usdt >= 0 else ""
-        result = "FOYDA" if pnl_usdt >= 0 else "ZARAR"
+        if pnl_usdt >= 0:
+            result_emoji = "✅ FOYDA"
+            result_icon = "💚"
+        else:
+            result_emoji = "❌ ZARAR"
+            result_icon = "🔴"
 
         await self.notify(
-            f"*{result}* `{symbol}`\n"
-            f"Sabab: _{reason}_\n"
-            f"Kirish: `${pos.entry_price:,.4f}` → `${current_price:,.4f}`\n"
-            f"PnL: `{sign}{pnl_usdt:.4f} USDT` ({sign}{pnl_pct:.2f}%)\n"
-            f"Jami PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.4f} USDT`\n"
-            f"Win rate: `{wr:.0f}%` ({self.win_count}W/{self.loss_count}L)"
+            f"{result_icon} *{result_emoji}* {result_icon}\n"
+            f"💎 `{symbol}`\n"
+            f"📝 Sabab: _{reason}_\n"
+            f"📈 Kirish: `${pos.entry_price:,.4f}` → `${current_price:,.4f}`\n"
+            f"💰 PnL: `{sign}{pnl_usdt:.4f} USDT` ({sign}{pnl_pct:.2f}%)\n"
+            f"🏦 Jami PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.4f} USDT`\n"
+            f"🎯 Win rate: `{wr:.0f}%` ({self.win_count}W/{self.loss_count}L)"
         )
 
     async def monitor_positions(self):
@@ -365,18 +377,19 @@ class FuturesBot:
         self.starting_balance = balance
 
         await self.notify(
-            f"*MEXC Futures Bot ishga tushdi!*\n"
-            f"Balans: `{balance:.2f} USDT`\n"
-            f"Leverage: `{self.leverage}x`\n"
-            f"Stop-Loss: `{self.stop_loss_pct*100:.1f}%`\n"
-            f"Take-Profit: `{self.take_profit_pct*100:.1f}%`\n"
-            f"Max pozitsiyalar: `{self.max_positions}`\n"
-            f"Max kunlik zarar: `{self.max_daily_loss_pct*100:.0f}%`\n"
-            f"Skanerlash: har 15 soniyada 30 juftlik\n"
-            f"Long va Short ikkalasi ishlaydi!"
+            f"🤖 *MEXC Futures Bot ishga tushdi!* 🚀\n\n"
+            f"💰 Balans: `{balance:.2f} USDT`\n"
+            f"⚡ Leverage: `{self.leverage}x`\n"
+            f"🛡 Stop-Loss: `{self.stop_loss_pct*100:.1f}%`\n"
+            f"🎯 Take-Profit: `{self.take_profit_pct*100:.1f}%`\n"
+            f"📊 Max pozitsiyalar: `{self.max_positions}`\n"
+            f"⚠️ Max kunlik zarar: `{self.max_daily_loss_pct*100:.0f}%`\n"
+            f"🔍 Skanerlash: har 30 soniyada 30 juftlik\n"
+            f"🟢 Long va 🔴 Short ikkalasi ishlaydi!\n\n"
+            f"📡 MACD + ADX + EMA + RSI + BB aktivlashtirildi!"
         )
 
-        scan_timer = 0
+        scan_timer = 30  # Darhol skan boshlash uchun (bot yoqilishi bilanoq)
         hourly_timer = 0
 
         while self.running:
@@ -391,13 +404,14 @@ class FuturesBot:
                     balance = await self.api.get_balance()
                     total = self.win_count + self.loss_count
                     wr = self.win_count / total * 100 if total > 0 else 0
+                    pnl_icon = "📈" if self.total_pnl >= 0 else "📉"
                     await self.notify(
-                        f"*Soatlik hisobot*\n"
-                        f"Balans: `{balance:.4f} USDT`\n"
-                        f"Jami PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.4f} USDT`\n"
-                        f"Savdolar: `{total}` (W:{self.win_count}/L:{self.loss_count})\n"
-                        f"Win rate: `{wr:.0f}%`\n"
-                        f"Ochiq: `{len(self.positions)}`"
+                        f"📊 *Soatlik hisobot* 📊\n\n"
+                        f"🏦 Balans: `{balance:.4f} USDT`\n"
+                        f"{pnl_icon} Jami PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.4f} USDT`\n"
+                        f"🔢 Savdolar: `{total}` (✅{self.win_count} / ❌{self.loss_count})\n"
+                        f"🎯 Win rate: `{wr:.0f}%`\n"
+                        f"💼 Ochiq pozitsiyalar: `{len(self.positions)}`"
                     )
                     hourly_timer = 0
                     self.daily_loss = 0  # Kunlik reset
