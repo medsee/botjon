@@ -102,7 +102,7 @@ class MEXCTrading:
         r = await self._public("/api/v3/ticker/24hr")
         return r if isinstance(r, list) else []
 
-    async def get_klines(self, symbol: str, interval="Min1", limit=50) -> list:
+    async def get_klines(self, symbol: str, interval="1m", limit=50) -> list:
         r = await self._public("/api/v3/klines", {
             "symbol": symbol, "interval": interval, "limit": limit
         })
