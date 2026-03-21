@@ -28,9 +28,9 @@ jobs:
           MEXC_API_KEY:       ${{ secrets.MEXC_API_KEY }}
           MEXC_SECRET_KEY:    ${{ secrets.MEXC_SECRET_KEY }}
           MAX_TRADE_PCT:      "0.25"
-          ATR_SL_MULT:        "1.5"
-          ATR_TP_MULT:        "3.0"
-          HARD_SL_PCT:        "0.025"
+          ATR_SL_MULT:        "1.2"
+          ATR_TP_MULT:        "3.5"
+          HARD_SL_PCT:        "0.020"
           MAX_DAILY_LOSS_PCT: "0.08"
           MAX_OPEN_POSITIONS: "3"
-          MAX_HOLD_SECONDS:   "900"
+          MAX_HOLD_SECONDS:   "600"
