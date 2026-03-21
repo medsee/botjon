@@ -76,7 +76,7 @@ class SpotBot:
         self.hard_sl_pct        = 0.015  # 1.5% o'zgarmas SL (qattiq)
         self.max_daily_loss_pct = 0.08   # 8% kunlik limit
         self.max_hold_seconds   = 300    # 5 daqiqa max
-        self.min_usdt           = 1.5
+        self.min_usdt           = 2.0
 
         # ── Tezlik ──────────────────────────────────────────
         self.scan_interval    = 5
@@ -173,8 +173,10 @@ class SpotBot:
                 del self.blacklist_time[signal.symbol]
 
         usdt_amount = balance * self.trade_pct
-        if usdt_amount < self.min_usdt:
+        # MEXC minimal savdo: 2 USDT, lekin xavfsizlik uchun 1.5 USDT dan kam bo'lmasin
+        if usdt_amount < 1.5:
             return False
+        usdt_amount = max(usdt_amount, 1.5)
 
         tp, sl, hard_sl = self.calc_tp_sl(signal.price, signal.atr)
         sl_pct = (signal.price - sl) / signal.price * 100
@@ -372,7 +374,7 @@ class SpotBot:
             if symbol in self.positions or symbol in self.blacklist:
                 return
             if symbol in self.blacklist_time:
-                if time.time() - self.blacklist_time[symbol] < 300:
+                if time.time() - self.blacklist_time[symbol] < 120:
                     return
             try:
                 klines_t = self.api.get_klines(symbol, "1m", 60)
@@ -411,12 +413,96 @@ class SpotBot:
                     balance -= balance * self.trade_pct
                 await asyncio.sleep(0.2)
 
+    async def sync_positions(self):
+        """MEXC dagi haqiqiy balanslarni tekshirib, bot pozitsiyalarini sinxronlashtirish"""
+        try:
+            r = await self.api._get("/api/v3/account", signed=True)
+            if not r:
+                return
+            synced = 0
+            for b in r.get("balances", []):
+                asset = b.get("asset", "")
+                free  = float(b.get("free", 0))
+                if asset == "USDT" or free <= 0:
+                    continue
+                symbol = f"{asset}_USDT"
+                # Agar bot da yo'q, lekin MEXC da bor
+                if symbol not in self.positions and free > 0:
+                    ticker = await self.api.get_ticker(symbol)
+                    if not ticker:
+                        continue
+                    price = float(ticker.get("lastPrice", 0))
+                    if price <= 0 or free * price < 0.5:
+                        continue
+                    # Taxminiy pozitsiya yaratish
+                    tp = price * 1.025   # 2.5% TP
+                    sl = price * 0.985   # 1.5% SL
+                    pos = SpotPosition(
+                        symbol=symbol,
+                        entry_price=price,
+                        qty=free,
+                        tp=tp, sl=sl,
+                        hard_sl=price * 0.980,
+                        usdt_spent=free * price,
+                        peak_price=price,
+                    )
+                    self.positions[symbol] = pos
+                    synced += 1
+                    logger.info(f"Sinxron: {symbol} qty={free:.6f} @ {price:.6f}")
+            if synced > 0:
+                msg = "Sinxron: " + str(synced) + " ta pozitsiya yuklandi"
+                await self.notify(msg)
+        except Exception as e:
+            logger.error(f"Sinxron xato: {e}")
+
+
+    async def sync_positions(self):
+        """MEXC dagi haqiqiy balanslarni tekshirib sinxronlashtirish"""
+        try:
+            r = await self.api._get("/api/v3/account", signed=True)
+            if not r:
+                return
+            synced = 0
+            for b in r.get("balances", []):
+                asset = b.get("asset", "")
+                free  = float(b.get("free", 0))
+                if asset == "USDT" or free <= 0:
+                    continue
+                symbol = asset + "_USDT"
+                if symbol in self.positions:
+                    continue
+                ticker = await self.api.get_ticker(symbol)
+                if not ticker:
+                    continue
+                price = float(ticker.get("lastPrice", 0))
+                if price <= 0 or free * price < 0.5:
+                    continue
+                tp      = round(price * 1.025, 8)
+                sl      = round(price * 0.985, 8)
+                hard_sl = round(price * 0.980, 8)
+                pos = SpotPosition(
+                    symbol=symbol, entry_price=price,
+                    qty=free, tp=tp, sl=sl, hard_sl=hard_sl,
+                    usdt_spent=free * price, peak_price=price,
+                )
+                self.positions[symbol] = pos
+                synced += 1
+                logger.info(f"Sinxron: {symbol} qty={free:.6f} @ {price:.6f}")
+            if synced > 0:
+                msg = f"Sinxron: {synced} ta pozitsiya yuklandi"
+                await self.notify(msg)
+        except Exception as e:
+            logger.error(f"Sinxron xato: {e}")
+
     async def run(self):
         logger.info("Spot Bot BALANCED v4 ishga tushdi!")
         self.running = True
 
         balance = await self.api.get_balance("USDT")
         self.starting_balance = balance
+
+        # MEXC dagi mavjud pozitsiyalarni yuklash
+        await self.sync_positions()
 
         await self.notify(
             f"{S['dragon']} *MEXC Spot Bot* {S['fire']}\n\n"
