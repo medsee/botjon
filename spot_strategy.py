@@ -82,11 +82,21 @@ def atr(highs, lows, closes, period=14):
     return sum(trs[-period:]) / period
 
 
+# Xavfli meme/pump tokenlar — hech qachon kirmaymiz
+BLACKLISTED_TOKENS = {
+    "CARROT", "MEME", "PEPE", "SHIB", "FLOKI", "BONK", "WIF",
+    "TURBO", "DEGEN", "NEIRO", "BOME", "MYRO", "POPCAT",
+    "PONKE", "SLERF", "TRUMP", "MELANIA", "FARTCOIN", "GOAT",
+    "MOODENG", "PNUT", "ACT", "AIDOGE", "BABYDOGE", "SAMO",
+    "KISHU", "AKITA", "HOGE", "ELON", "CATE", "VOLT",
+}
+
+
 class SpotStrategy:
     def __init__(self):
-        self.min_strength = 0.45   # Muvozanatli filtr
+        self.min_strength = 0.45
         self.min_atr_pct  = 0.002  # 0.2% minimal volatillik
-        self.max_atr_pct  = 0.08   # 8% maksimal volatillik
+        self.max_atr_pct  = 0.05   # 5% maksimal (eski 8%)
 
     def analyze(self, symbol: str, klines: list, ticker: dict) -> Optional[SpotSignal]:
         if len(klines) < 30:
@@ -102,6 +112,11 @@ class SpotStrategy:
 
         price = closes[-1]
         if price <= 0:
+            return None
+
+        # Xavfli token filtri
+        base = symbol.replace("_USDT", "").upper()
+        if base in BLACKLISTED_TOKENS:
             return None
 
         # Volatillik filtri
