@@ -23,9 +23,15 @@ class MEXCSpot:
         self.secret_key = secret_key.strip()
         self._session   = requests.Session()
         self._session.headers.update({
-            "Content-Type":    "application/json",
-            "X-MEXC-APIKEY":   self.api_key,
-            "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json",
+            "User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        })
+        # Private so'rovlar uchun alohida session
+        self._private_session = requests.Session()
+        self._private_session.headers.update({
+            "Content-Type":  "application/json",
+            "X-MEXC-APIKEY": self.api_key,
+            "User-Agent":    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         })
 
     def _sign(self, params: str) -> str:
@@ -44,13 +50,15 @@ class MEXCSpot:
     def _get_sync(self, endpoint: str, params: dict = None, signed: bool = False):
         params = params or {}
         if signed:
-            query = self._signed_params(params)
+            query   = self._signed_params(params)
+            session = self._private_session
         else:
-            query = urlencode(params) if params else ""
+            query   = urlencode(params) if params else ""
+            session = self._session
         url = f"{BASE}{endpoint}" + (f"?{query}" if query else "")
         for attempt in range(3):
             try:
-                r    = self._session.get(url, timeout=15)
+                r    = session.get(url, timeout=15)
                 text = r.text.strip()
                 if not text:
                     logger.error(f"GET {endpoint} attempt {attempt+1}: Bo'sh javob")
@@ -73,7 +81,7 @@ class MEXCSpot:
         url    = f"{BASE}{endpoint}?{query}"
         for attempt in range(3):
             try:
-                r    = self._session.post(url, timeout=15)
+                r    = self._private_session.post(url, timeout=15)
                 text = r.text.strip()
                 logger.info(f"POST {endpoint} [{r.status_code}]: {text[:300]}")
                 if not text:
@@ -215,3 +223,4 @@ class MEXCSpot:
 
     async def close(self):
         self._session.close()
+        self._private_session.close()
