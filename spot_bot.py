@@ -1,10 +1,10 @@
 """
-MEXC Spot Scalping Bot
-- Leverage yo'q (1x)
-- Faqat LONG (buy/sell)
-- TP/SL bot ichida boshqariladi
+MEXC Spot Scalping Bot - ULTRA PRO v2
+- Darhol ishga tushganda analiz va pozitsiya ochadi
+- ATR asosida dinamik TP/SL (sliv yo'q!)
 - Trailing Stop + Break-even
-- Har 10 soniyada skan
+- Stikerlı Telegram xabarlari
+- Ko'p qatlam himoya
 """
 import asyncio
 import logging
@@ -15,7 +15,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from mexc_spot import MEXCSpot
-from futures_strategy import FuturesStrategy, FuturesSignal
+from spot_strategy import SpotStrategy, SpotSignal
 
 load_dotenv()
 logging.basicConfig(
@@ -28,25 +28,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Stikerlар ────────────────────────────────────────────────
+S = {
+    "rocket":   "🚀", "fire":    "🔥", "gem":     "💎",
+    "money":    "💰", "chart_up":"📈", "chart_dn":"📉",
+    "win":      "✅", "loss":    "❌", "warn":    "⚠️",
+    "shield":   "🛡", "target":  "🎯", "clock":   "⏱",
+    "coin":     "🪙", "bank":    "🏦", "stats":   "📊",
+    "bolt":     "⚡", "stop":    "🛑", "ok":      "👌",
+    "trophy":   "🏆", "cry":     "😢", "eyes":    "👀",
+    "muscle":   "💪", "star":    "⭐", "boom":    "💥",
+    "green":    "🟢", "red":     "🔴", "yellow":  "🟡",
+    "dragon":   "🐉", "wolf":    "🐺", "bull":    "🐂",
+}
+
 
 @dataclass
 class SpotPosition:
-    symbol: str          # masalan: BTC_USDT
+    symbol: str
     entry_price: float
-    qty: float           # koin miqdori
+    qty: float
     tp: float
     sl: float
-    usdt_spent: float    # sarflangan USDT
+    hard_sl: float       # O'zgarmas qattiq SL (sliv yo'q uchun)
+    usdt_spent: float
     open_time: float = field(default_factory=time.time)
     peak_price: float = 0.0
     breakeven_moved: bool = False
+    trailing_active: bool = False
 
     @property
     def age_seconds(self):
         return time.time() - self.open_time
 
-    def pnl_pct(self, current_price: float) -> float:
-        return (current_price - self.entry_price) / self.entry_price * 100
+    def pnl_pct(self, price: float) -> float:
+        return (price - self.entry_price) / self.entry_price * 100
+
+    def pnl_usdt(self, price: float) -> float:
+        return self.qty * (price - self.entry_price)
 
 
 class SpotBot:
@@ -55,26 +74,27 @@ class SpotBot:
             api_key=os.getenv("MEXC_API_KEY", ""),
             secret_key=os.getenv("MEXC_SECRET_KEY", ""),
         )
-        self.strategy = FuturesStrategy()
+        self.strategy = SpotStrategy()
 
         # ── Risk parametrlari ────────────────────────────────
-        self.max_positions      = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
-        self.trade_pct          = float(os.getenv("MAX_TRADE_PCT",      "0.20"))   # 20% balansdan
-        self.stop_loss_pct      = float(os.getenv("STOP_LOSS_PCT",      "0.015"))  # 1.5% SL
-        self.take_profit_pct    = float(os.getenv("TAKE_PROFIT_PCT",    "0.030"))  # 3.0% TP
-        self.max_daily_loss_pct = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.10"))   # 10% kunlik zarar
-        self.max_hold_seconds   = int(os.getenv("MAX_HOLD_SECONDS",     "600"))    # 10 daqiqa max
+        self.max_positions      = int(os.getenv("MAX_OPEN_POSITIONS",  "3"))
+        self.trade_pct          = float(os.getenv("MAX_TRADE_PCT",     "0.25"))   # 25% har savdoga
+        self.atr_sl_mult        = float(os.getenv("ATR_SL_MULT",      "1.5"))    # SL = 1.5x ATR
+        self.atr_tp_mult        = float(os.getenv("ATR_TP_MULT",      "3.0"))    # TP = 3x ATR
+        self.hard_sl_pct        = float(os.getenv("HARD_SL_PCT",      "0.025"))  # 2.5% qattiq SL
+        self.max_daily_loss_pct = float(os.getenv("MAX_DAILY_LOSS_PCT","0.08"))  # 8% kunlik limit
+        self.max_hold_seconds   = int(os.getenv("MAX_HOLD_SECONDS",   "900"))    # 15 daqiqa max
+        self.min_usdt           = 2.0
 
-        # ── Tezlik sozlamalari ───────────────────────────────
-        self.scan_interval    = 10
-        self.monitor_interval = 3
-        self.top_symbols_limit = 30
-        self.batch_size       = 6
-        self.batch_delay      = 0.3
-        self.min_usdt         = 2.0   # Minimal savdo miqdori USDT
+        # ── Tezlik ──────────────────────────────────────────
+        self.scan_interval     = 8     # Har 8 soniyada skan
+        self.monitor_interval  = 2     # Har 2 soniyada monitor
+        self.top_symbols_limit = 40
+        self.batch_size        = 8
+        self.batch_delay       = 0.2
 
         self.positions: dict[str, SpotPosition] = {}
-        self.blacklist: set  = set()
+        self.blacklist: set   = set()
         self.symbol_cache: list = []
         self.cache_time: float  = 0
         self.cache_ttl: int     = 300
@@ -104,16 +124,11 @@ class SpotBot:
                     "chat_id":    self.telegram_chat_id,
                     "text":       msg,
                     "parse_mode": "Markdown",
-                }, timeout=aiohttp.ClientTimeout(total=5))
+                }, timeout=aiohttp.ClientTimeout(total=8))
         except Exception as e:
             logger.error(f"Telegram xato: {e}")
 
-    # ── Symbol → base asset ──────────────────────────────────
-    def get_base_asset(self, symbol: str) -> str:
-        """BTC_USDT → BTC"""
-        return symbol.replace("_USDT", "").replace("USDT", "")
-
-    # ── Juftliklar ro'yxati ──────────────────────────────────
+    # ── Juftliklar ───────────────────────────────────────────
     async def get_top_symbols(self) -> list:
         now = time.time()
         if self.symbol_cache and (now - self.cache_time) < self.cache_ttl:
@@ -124,40 +139,41 @@ class SpotBot:
             return self.symbol_cache or []
 
         usdt = []
+        skip_keywords = ["DOWN", "UP", "BEAR", "BULL", "3L", "3S", "2L", "2S"]
         for t in tickers:
             sym = t.get("symbol", "")
-            # Spot symbollar BTCUSDT formatida, biz BTC_USDT ga aylantiramiz
-            if sym.endswith("USDT") and not sym.endswith("DOWNUSDT") and not sym.endswith("UPUSDT"):
-                # Blacklist tekshiruvi
-                spot_sym = sym[:-4] + "_USDT"
-                if spot_sym in self.blacklist:
-                    continue
-                try:
-                    vol = float(t.get("quoteVolume", t.get("volume", 0)))
-                    price = float(t.get("lastPrice", 0))
-                    # Juda arzon va juda qimmat tokenlarni o'tkazib yuborish
-                    if vol > 50000 and price > 0.000001:
-                        usdt.append((spot_sym, vol))
-                except:
-                    pass
+            if not sym.endswith("USDT"):
+                continue
+            if any(k in sym for k in skip_keywords):
+                continue
+            spot_sym = sym[:-4] + "_USDT"
+            if spot_sym in self.blacklist:
+                continue
+            try:
+                vol   = float(t.get("quoteVolume", 0))
+                price = float(t.get("lastPrice", 0))
+                if vol > 100000 and price > 0.000001:
+                    usdt.append((spot_sym, vol))
+            except:
+                pass
 
         usdt.sort(key=lambda x: x[1], reverse=True)
         self.symbol_cache = [s for s, _ in usdt[:self.top_symbols_limit]]
         self.cache_time   = now
-        logger.info(f"Juftlik keshi yangilandi: {len(self.symbol_cache)} ta")
+        logger.info(f"Kesh yangilandi: {len(self.symbol_cache)} juftlik")
         return self.symbol_cache
 
-    # ── TP/SL hisoblash ──────────────────────────────────────
-    def calc_tp_sl(self, entry: float) -> tuple:
-        tp = entry * (1 + self.take_profit_pct)
-        sl = entry * (1 - self.stop_loss_pct)
-        return round(tp, 8), round(sl, 8)
+    # ── TP/SL hisoblash (ATR asosida) ────────────────────────
+    def calc_tp_sl(self, entry: float, atr_val: float) -> tuple:
+        sl      = entry - self.atr_sl_mult * atr_val
+        tp      = entry + self.atr_tp_mult * atr_val
+        hard_sl = entry * (1 - self.hard_sl_pct)
+        # SL minimal qattiq SL dan past bo'lmasin
+        sl = max(sl, hard_sl)
+        return round(tp, 8), round(sl, 8), round(hard_sl, 8)
 
-    # ── Pozitsiya ochish (BUY) ───────────────────────────────
-    async def open_position(self, signal: FuturesSignal, balance: float) -> bool:
-        # Faqat LONG signallar (Spot da SHORT yo'q)
-        if signal.side != "LONG":
-            return False
+    # ── Pozitsiya ochish ─────────────────────────────────────
+    async def open_position(self, signal: SpotSignal, balance: float) -> bool:
         if signal.symbol in self.positions:
             return False
         if len(self.positions) >= self.max_positions:
@@ -165,88 +181,112 @@ class SpotBot:
 
         usdt_amount = balance * self.trade_pct
         if usdt_amount < self.min_usdt:
-            logger.info(f"Balans kam: {balance:.2f} USDT → {usdt_amount:.2f} USDT savdo uchun")
             return False
 
-        tp, sl = self.calc_tp_sl(signal.price)
+        tp, sl, hard_sl = self.calc_tp_sl(signal.price, signal.atr)
 
-        logger.info(f"BUY: {signal.symbol} ${usdt_amount:.2f} USDT @ {signal.price:.6f} | strength={signal.strength:.0%}")
+        # SL juda yaqin bo'lsa — o'tkazib yubor
+        sl_pct = (signal.price - sl) / signal.price * 100
+        tp_pct = (tp - signal.price) / signal.price * 100
+        if sl_pct > 4.0:   # 4% dan katta SL — juda xavfli
+            logger.info(f"SL juda katta ({sl_pct:.1f}%), o'tkazildi: {signal.symbol}")
+            return False
+        if tp_pct < 0.5:   # TP juda kichik
+            return False
+
+        logger.info(f"BUY: {signal.symbol} ${usdt_amount:.2f} @ {signal.price:.6f} | TP={tp_pct:.1f}% SL={sl_pct:.1f}%")
 
         order = await self.api.buy_market(signal.symbol, usdt_amount)
         if not order:
-            logger.error(f"BUY order xato: {signal.symbol}")
+            logger.error(f"BUY xato: {signal.symbol}")
             self.blacklist.add(signal.symbol)
             return False
 
-        # Sotib olingan miqdor
         qty = float(order.get("executedQty", 0))
         if qty <= 0:
-            # fills dan hisoblash
             fills = order.get("fills", [])
-            if fills:
-                qty = sum(float(f.get("qty", 0)) for f in fills)
-            else:
-                qty = usdt_amount / signal.price  # taxminiy
+            qty   = sum(float(f.get("qty", 0)) for f in fills) if fills else usdt_amount / signal.price
 
-        actual_price = float(order.get("cummulativeQuoteQty", usdt_amount)) / qty if qty > 0 else signal.price
-        tp, sl       = self.calc_tp_sl(actual_price)
+        spent        = float(order.get("cummulativeQuoteQty", usdt_amount))
+        actual_price = spent / qty if qty > 0 else signal.price
+        tp, sl, hard_sl = self.calc_tp_sl(actual_price, signal.atr)
 
         pos = SpotPosition(
             symbol=signal.symbol,
             entry_price=actual_price,
             qty=qty,
-            tp=tp, sl=sl,
-            usdt_spent=usdt_amount,
+            tp=tp, sl=sl, hard_sl=hard_sl,
+            usdt_spent=spent,
             peak_price=actual_price,
         )
         self.positions[signal.symbol] = pos
 
+        sl_pct2 = (actual_price - sl) / actual_price * 100
+        tp_pct2 = (tp - actual_price) / actual_price * 100
+        base    = signal.symbol.replace("_USDT", "")
+
         await self.notify(
-            f"🟢 *BUY OCHILDI* 🟢\n"
-            f"💎 `{signal.symbol}`\n"
-            f"💰 Narx: `${actual_price:,.6f}`\n"
-            f"📦 Miqdor: `{qty:.6f}` koin\n"
-            f"💵 Sarflandi: `${usdt_amount:.2f} USDT`\n"
-            f"🎯 TP: `${tp:,.6f}` (+{self.take_profit_pct*100:.1f}%)\n"
-            f"🛡 SL: `${sl:,.6f}` (-{self.stop_loss_pct*100:.1f}%)\n"
-            f"📊 Kuch: `{signal.strength:.0%}` | _{signal.reason}_"
+            f"{S['rocket']} *POZITSIYA OCHILDI* {S['fire']}\n\n"
+            f"{S['gem']} Juftlik: `{signal.symbol}`\n"
+            f"{S['money']} Narx: `${actual_price:,.6f}`\n"
+            f"{S['coin']} Miqdor: `{qty:.6f} {base}`\n"
+            f"{S['bank']} Sarflandi: `${spent:.2f} USDT`\n\n"
+            f"{S['target']} TP: `${tp:,.6f}` _(+{tp_pct2:.1f}%)_\n"
+            f"{S['shield']} SL: `${sl:,.6f}` _(-{sl_pct2:.1f}%)_\n\n"
+            f"{S['stats']} Kuch: `{signal.strength:.0%}`\n"
+            f"{S['bolt']} Signal: _{signal.reason}_\n"
+            f"{S['clock']} RR nisbat: `1:{tp_pct2/sl_pct2:.1f}`"
         )
         return True
 
-    # ── Pozitsiya yopish (SELL) ──────────────────────────────
-    async def close_position(self, symbol: str, reason: str, current_price: float):
+    # ── Pozitsiya yopish ─────────────────────────────────────
+    async def close_position(self, symbol: str, reason: str, price: float):
         pos = self.positions.get(symbol)
         if not pos:
             return
 
-        pnl_pct = pos.pnl_pct(current_price)
-        pnl_usdt = pos.usdt_spent * pnl_pct / 100
+        pnl_pct  = pos.pnl_pct(price)
+        pnl_usdt = pos.pnl_usdt(price)
+        won      = pnl_pct > 0
 
-        logger.info(f"SELL: {symbol} @ {current_price:.6f} | PnL={pnl_pct:.2f}% | {reason}")
+        logger.info(f"SELL: {symbol} @ {price:.6f} | PnL={pnl_pct:.2f}% ({pnl_usdt:+.3f} USDT) | {reason}")
 
         order = await self.api.sell_market(symbol, pos.qty)
         if not order:
-            logger.error(f"SELL order xato: {symbol}")
-            # Qayta urinish
             order = await self.api.sell_market(symbol, pos.qty)
 
         self.total_pnl += pnl_usdt
-        if pnl_pct > 0:
-            self.win_count  += 1
+        if won:
+            self.win_count += 1
         else:
             self.loss_count += 1
             self.daily_loss -= abs(pnl_usdt)
 
         del self.positions[symbol]
 
-        icon = "✅" if pnl_pct > 0 else "❌"
+        hold_m = int(pos.age_seconds // 60)
+        hold_s = int(pos.age_seconds % 60)
+
+        if won:
+            header = f"{S['trophy']} *FOYDA!* {S['chart_up']}{S['fire']}"
+        else:
+            header = f"{S['cry']} *Zarar* {S['chart_dn']}"
+
+        total  = self.win_count + self.loss_count
+        wr     = self.win_count / total * 100 if total > 0 else 0
+
         await self.notify(
-            f"{icon} *SOLD* {icon}\n"
-            f"💎 `{symbol}`\n"
-            f"📤 Sabab: `{reason}`\n"
-            f"💰 Chiqish: `${current_price:,.6f}`\n"
-            f"📈 PnL: `{'+' if pnl_pct>0 else ''}{pnl_pct:.2f}%` (`{'+' if pnl_usdt>0 else ''}{pnl_usdt:.3f} USDT`)\n"
-            f"⏱ Ushlanish: `{pos.age_seconds:.0f}s`"
+            f"{header}\n\n"
+            f"{S['gem']} Juftlik: `{symbol}`\n"
+            f"{S['money']} Chiqish: `${price:,.6f}`\n"
+            f"{S['coin']} Kirish: `${pos.entry_price:,.6f}`\n\n"
+            f"{'📈' if won else '📉'} PnL: `{'+' if won else ''}{pnl_pct:.2f}%` "
+            f"(`{'+' if won else ''}{pnl_usdt:.3f} USDT`)\n"
+            f"{S['clock']} Vaqt: `{hold_m}:{hold_s:02d}`\n"
+            f"{S['stats']} Sabab: _{reason}_\n\n"
+            f"{S['trophy']} Jami: `{self.win_count}W / {self.loss_count}L` "
+            f"| Win: `{wr:.0f}%`\n"
+            f"{S['bank']} Umumiy PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.3f} USDT`"
         )
 
     # ── Pozitsiyalarni kuzatish ──────────────────────────────
@@ -269,61 +309,65 @@ class SpotBot:
                 if price > pos.peak_price:
                     pos.peak_price = price
 
-                # 1) Max ushlanish vaqti
+                # 1) Qattiq SL — hech qachon o'zgarmaydi
+                if price <= pos.hard_sl:
+                    await self.close_position(symbol, f"{S['shield']} HardSL {pnl:.1f}%", price)
+                    return
+
+                # 2) Max vaqt
                 if pos.age_seconds >= self.max_hold_seconds:
-                    await self.close_position(symbol, f"⏱Vaqt {pos.age_seconds:.0f}s", price)
+                    await self.close_position(symbol, f"{S['clock']} Vaqt {pos.age_seconds/60:.0f}daq", price)
                     return
 
-                # 2) Take Profit
+                # 3) Take Profit
                 if price >= pos.tp:
-                    await self.close_position(symbol, f"🎯TP +{pnl:.1f}%", price)
+                    await self.close_position(symbol, f"{S['target']} TP +{pnl:.1f}%", price)
                     return
 
-                # 3) Stop Loss
+                # 4) Dinamik SL
                 if price <= pos.sl:
-                    await self.close_position(symbol, f"🛡SL {pnl:.1f}%", price)
+                    await self.close_position(symbol, f"{S['shield']} SL {pnl:.1f}%", price)
                     return
 
-                # 4) Break-even: 1.5% foydada SL ni kirish narxiga ko'tar
+                # 5) Break-even: 1.5% foydada SL ni kirish narxiga ko'tar
                 if not pos.breakeven_moved and pnl >= 1.5:
-                    new_sl = pos.entry_price * 1.002
+                    new_sl = pos.entry_price * 1.003
                     if new_sl > pos.sl:
                         pos.sl = new_sl
                         pos.breakeven_moved = True
                         logger.info(f"Break-even: {symbol} SL → {new_sl:.6f}")
 
-                # 5) Trailing Stop: 2% foydadan keyin peak orqasida
-                if pnl >= 2.0:
-                    trail_dist = self.stop_loss_pct * 0.6
-                    new_sl = pos.peak_price * (1 - trail_dist)
-                    if new_sl > pos.sl:
-                        pos.sl = new_sl
+                # 6) Trailing Stop: 2.5% foydadan keyin
+                if pnl >= 2.5:
+                    if not pos.trailing_active:
+                        pos.trailing_active = True
+                    trail = pos.peak_price * (1 - 0.012)  # peak dan 1.2% past
+                    if trail > pos.sl:
+                        pos.sl = trail
 
             except Exception as e:
                 logger.error(f"Monitor xato {symbol}: {e}")
 
-        await asyncio.gather(*[check(sym, pos) for sym, pos in list(self.positions.items())])
+        await asyncio.gather(*[check(s, p) for s, p in list(self.positions.items())])
 
     # ── Kunlik zarar limiti ───────────────────────────────────
     async def check_daily_loss(self, balance: float) -> bool:
         if self.starting_balance <= 0:
             self.starting_balance = balance
             return True
-
         if time.time() - self.daily_start_time >= 86400:
             self.daily_loss       = 0
             self.daily_start_time = time.time()
             self.starting_balance = balance
-            logger.info("Kunlik statistika reset qilindi")
             return True
-
         if self.starting_balance > 0:
             loss_pct = abs(self.daily_loss) / self.starting_balance * 100
             if loss_pct >= self.max_daily_loss_pct * 100:
                 await self.notify(
-                    f"⚠️ *KUNLIK ZARAR LIMITI!* ⚠️\n"
-                    f"Zarar: `{loss_pct:.1f}%`\n"
-                    f"Bot bugun savdoni to'xtatdi."
+                    f"{S['warn']} *KUNLIK ZARAR LIMITI!* {S['warn']}\n\n"
+                    f"{S['chart_dn']} Zarar: `{loss_pct:.1f}%`\n"
+                    f"{S['stop']} Bot bugun savdoni to'xtatdi.\n"
+                    f"Ertaga avtomatik qayta boshlanadi {S['clock']}"
                 )
                 return False
         return True
@@ -336,7 +380,7 @@ class SpotBot:
         if len(self.positions) >= self.max_positions:
             return
         if balance < self.min_usdt:
-            logger.info(f"USDT balans kam: {balance:.2f}")
+            logger.info(f"USDT kam: {balance:.2f}")
             return
 
         self.scan_count += 1
@@ -351,19 +395,13 @@ class SpotBot:
             if symbol in self.positions or symbol in self.blacklist:
                 return
             try:
-                klines_task = self.api.get_klines(symbol, "1m", 50)
-                ticker_task = self.api.get_ticker(symbol)
-                klines, ticker = await asyncio.gather(klines_task, ticker_task)
+                klines_t = self.api.get_klines(symbol, "1m", 60)
+                ticker_t = self.api.get_ticker(symbol)
+                klines, ticker = await asyncio.gather(klines_t, ticker_t)
                 if not klines or not ticker:
                     return
-                # Ticker formatini futures bilan moslashtirish
-                ticker_adapted = {
-                    "lastPrice":   ticker.get("lastPrice", 0),
-                    "volume24":    ticker.get("quoteVolume", 0),
-                    "quoteVolume": ticker.get("quoteVolume", 0),
-                }
-                signal = self.strategy.analyze(symbol, klines, ticker_adapted)
-                if signal and signal.side == "LONG":  # Faqat LONG
+                signal = self.strategy.analyze(symbol, klines, ticker)
+                if signal:
                     async with lock:
                         signals.append(signal)
             except Exception as e:
@@ -383,44 +421,54 @@ class SpotBot:
 
         slots  = self.max_positions - len(self.positions)
         opened = 0
-        for signal in signals:
+        for sig in signals:
             if opened >= min(slots, 2):
                 break
-            if signal.symbol not in self.positions:
-                ok = await self.open_position(signal, balance)
+            if sig.symbol not in self.positions:
+                ok = await self.open_position(sig, balance)
                 if ok:
                     opened  += 1
                     balance -= balance * self.trade_pct
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
 
     # ── Asosiy loop ──────────────────────────────────────────
     async def run(self):
-        logger.info("Spot bot ishga tushdi!")
+        logger.info("Spot Bot ULTRA PRO ishga tushdi!")
         self.running = True
 
         balance = await self.api.get_balance("USDT")
         self.starting_balance = balance
 
         await self.notify(
-            f"🤖 *MEXC Spot Scalping Bot* 🚀\n\n"
-            f"💰 USDT Balans: `{balance:.2f} USDT`\n"
-            f"🛡 Stop-Loss: `{self.stop_loss_pct*100:.1f}%`\n"
-            f"🎯 Take-Profit: `{self.take_profit_pct*100:.1f}%`\n"
-            f"📊 Max pozitsiyalar: `{self.max_positions}`\n"
-            f"💵 Har savdoga: `{self.trade_pct*100:.0f}%` balansdan\n"
-            f"⚠️ Max kunlik zarar: `{self.max_daily_loss_pct*100:.0f}%`\n"
-            f"⏱ Skan: har `{self.scan_interval}s`\n"
-            f"🔍 Juftliklar: `{self.top_symbols_limit}` ta\n\n"
-            f"📡 EMA + RSI + BB + Volume\n"
-            f"🟢 LONG only | Break-even | Trailing Stop"
+            f"{S['dragon']} *MEXC Spot Bot ULTRA PRO* {S['fire']}\n\n"
+            f"{S['bank']} Balans: `{balance:.2f} USDT`\n"
+            f"{S['shield']} Stop-Loss: `ATR x{self.atr_sl_mult}` (max `{self.hard_sl_pct*100:.1f}%`)\n"
+            f"{S['target']} Take-Profit: `ATR x{self.atr_tp_mult}`\n"
+            f"{S['stats']} Max pozitsiyalar: `{self.max_positions}`\n"
+            f"{S['coin']} Har savdoga: `{self.trade_pct*100:.0f}%` balansdan\n"
+            f"{S['warn']} Max kunlik zarar: `{self.max_daily_loss_pct*100:.0f}%`\n"
+            f"{S['clock']} Skan: har `{self.scan_interval}s` | Monitor: `{self.monitor_interval}s`\n\n"
+            f"{S['bolt']} *Indikatorlar:*\n"
+            f"EMA5/10/20/50 · RSI · StochRSI · BB · ATR · Volume\n\n"
+            f"{S['muscle']} Sliv yo'q! Break-even + Trailing Stop + HardSL\n"
+            f"{S['rocket']} Darhol analiz boshlanmoqda..."
         )
 
-        scan_timer    = self.scan_interval
-        hourly_timer  = 0
+        # ── DARHOL birinchi skan ─────────────────────────────
+        logger.info("Darhol birinchi skan boshlanmoqda...")
+        await self.scan_and_trade()
+
+        scan_timer    = 0
         monitor_timer = 0
+        hourly_timer  = 0
 
         while self.running:
             try:
+                await asyncio.sleep(1)
+                scan_timer    += 1
+                monitor_timer += 1
+                hourly_timer  += 1
+
                 if monitor_timer >= self.monitor_interval:
                     await self.monitor_positions()
                     monitor_timer = 0
@@ -433,23 +481,17 @@ class SpotBot:
                     balance = await self.api.get_balance("USDT")
                     total   = self.win_count + self.loss_count
                     wr      = self.win_count / total * 100 if total > 0 else 0
-                    pnl_icon = "📈" if self.total_pnl >= 0 else "📉"
+                    pnl_icon = S['chart_up'] if self.total_pnl >= 0 else S['chart_dn']
                     await self.notify(
-                        f"📊 *Soatlik hisobot*\n\n"
-                        f"🏦 USDT Balans: `{balance:.4f}`\n"
+                        f"{S['stats']} *Soatlik Hisobot* {S['star']}\n\n"
+                        f"{S['bank']} Balans: `{balance:.4f} USDT`\n"
                         f"{pnl_icon} Jami PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.4f} USDT`\n"
-                        f"🔢 Savdolar: `{total}` (✅{self.win_count}/❌{self.loss_count})\n"
-                        f"🎯 Win rate: `{wr:.0f}%`\n"
-                        f"💼 Ochiq: `{len(self.positions)}`\n"
-                        f"🔍 Skanlar: `{self.scan_count}`"
+                        f"{S['trophy']} Savdolar: `{total}` (✅{self.win_count} / ❌{self.loss_count})\n"
+                        f"{S['target']} Win rate: `{wr:.0f}%`\n"
+                        f"{S['eyes']} Ochiq pozitsiya: `{len(self.positions)}`\n"
+                        f"{S['bolt']} Skanlar: `{self.scan_count}`"
                     )
-                    hourly_timer  = 0
-                    self.daily_loss = 0
-
-                await asyncio.sleep(1)
-                scan_timer    += 1
-                hourly_timer  += 1
-                monitor_timer += 1
+                    hourly_timer = 0
 
             except KeyboardInterrupt:
                 break
@@ -457,11 +499,11 @@ class SpotBot:
                 logger.error(f"Loop xato: {e}")
                 await asyncio.sleep(5)
 
-        # Barcha pozitsiyalarni yopish
+        # Yopish
         for symbol in list(self.positions.keys()):
             ticker = await self.api.get_ticker(symbol)
             price  = float(ticker.get("lastPrice", 0)) if ticker else 0
-            await self.close_position(symbol, "Bot toxtatildi", price)
+            await self.close_position(symbol, f"{S['stop']} Bot to'xtatildi", price)
 
         await self.api.close()
-        await self.notify("🔴 *Spot Bot toxtatildi.*")
+        await self.notify(f"{S['stop']} *Bot to'xtatildi.* Barcha pozitsiyalar yopildi {S['ok']}")
