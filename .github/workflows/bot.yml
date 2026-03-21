@@ -1,4 +1,4 @@
-name: MEXC Scalping Bot
+name: MEXC Spot Bot
 on:
   workflow_dispatch:
   schedule:
@@ -14,22 +14,12 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install
-        run: pip install python-telegram-bot==21.0.1 aiohttp python-dotenv requests websockets
-      - name: Test MEXC connection
-        run: |
-          echo "GitHub Actions IP:"
-          curl -s ifconfig.me
-          echo ""
-          echo "MEXC Futures API test:"
-          curl -s -o /dev/null -w "HTTP Status: %{http_code}" \
-            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            -H "Origin: https://futures.mexc.com" \
-            https://contract.mexc.com/api/v1/contract/ticker?symbol=BTC_USDT
+        run: pip install python-telegram-bot==21.0.1 aiohttp python-dotenv requests
       - name: Kill old bots
         run: |
           curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/deleteWebhook?drop_pending_updates=true"
           curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/close"
-          sleep 15
+          sleep 10
       - name: Run Bot
         run: python main.py
         env:
@@ -37,11 +27,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MEXC_API_KEY: ${{ secrets.MEXC_API_KEY }}
           MEXC_SECRET_KEY: ${{ secrets.MEXC_SECRET_KEY }}
-          MAX_TRADE_PCT: "0.05"
-          STOP_LOSS_PCT: "0.008"
-          TAKE_PROFIT_PCT: "0.015"
-          MAX_DAILY_LOSS_PCT: "0.05"
-          MAX_OPEN_POSITIONS: "5"
-          MAX_DAILY_TRADES: "100"
-          SCAN_INTERVAL: "15"
-          MAX_HOLD_SECONDS: "180"
+          MAX_TRADE_PCT: "0.20"
+          STOP_LOSS_PCT: "0.015"
+          TAKE_PROFIT_PCT: "0.030"
+          MAX_DAILY_LOSS_PCT: "0.10"
+          MAX_OPEN_POSITIONS: "3"
+          MAX_HOLD_SECONDS: "600"
