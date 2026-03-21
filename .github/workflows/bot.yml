@@ -1,4 +1,4 @@
-name: MEXC Spot Bot
+name: MEXC Spot Bot ULTRA PRO
 on:
   workflow_dispatch:
   schedule:
@@ -24,12 +24,13 @@ jobs:
         run: python main.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MEXC_API_KEY: ${{ secrets.MEXC_API_KEY }}
-          MEXC_SECRET_KEY: ${{ secrets.MEXC_SECRET_KEY }}
-          MAX_TRADE_PCT: "0.20"
-          STOP_LOSS_PCT: "0.015"
-          TAKE_PROFIT_PCT: "0.030"
-          MAX_DAILY_LOSS_PCT: "0.10"
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          MEXC_API_KEY:       ${{ secrets.MEXC_API_KEY }}
+          MEXC_SECRET_KEY:    ${{ secrets.MEXC_SECRET_KEY }}
+          MAX_TRADE_PCT:      "0.25"
+          ATR_SL_MULT:        "1.5"
+          ATR_TP_MULT:        "3.0"
+          HARD_SL_PCT:        "0.025"
+          MAX_DAILY_LOSS_PCT: "0.08"
           MAX_OPEN_POSITIONS: "3"
-          MAX_HOLD_SECONDS: "600"
+          MAX_HOLD_SECONDS:   "900"
