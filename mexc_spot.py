@@ -21,6 +21,7 @@ class MEXCSpot:
     def __init__(self, api_key: str, secret_key: str):
         self.api_key    = api_key.strip()
         self.secret_key = secret_key.strip()
+        self._symbol_info_cache: dict = {}   # stepSize cache
         self._session   = requests.Session()
         self._session.headers.update({
             "Content-Type": "application/json",
@@ -197,14 +198,44 @@ class MEXCSpot:
             "quoteOrderQty": round(usdt_amount, 2),
         })
 
+    async def get_step_size(self, symbol: str) -> int:
+        """Tokenning nechta kasrga yaxlitlanishini olish (stepSize dan)"""
+        if symbol in self._symbol_info_cache:
+            return self._symbol_info_cache[symbol]
+        sym  = symbol.replace("_", "")
+        info = await self._get("/api/v3/exchangeInfo", {"symbol": sym})
+        decimals = 6  # default
+        if info:
+            for s in info.get("symbols", []):
+                if s.get("symbol") == sym:
+                    for f in s.get("filters", []):
+                        if f.get("filterType") == "LOT_SIZE":
+                            step = f.get("stepSize", "0.000001")
+                            # stepSize dan decimal sonini hisoblash
+                            if "." in step:
+                                decimals = len(step.rstrip("0").split(".")[1])
+                            else:
+                                decimals = 0
+                            break
+                    break
+        self._symbol_info_cache[symbol] = decimals
+        return decimals
+
     async def sell_market(self, symbol: str, qty: float) -> Optional[dict]:
-        """Koin miqdori bilan market narxda sotish"""
-        sym = symbol.replace("_", "")
+        """Koin miqdori bilan market narxda sotish (stepSize ga mos)"""
+        sym      = symbol.replace("_", "")
+        decimals = await self.get_step_size(symbol)
+        # StepSize ga mos yaxlitlash (pastga)
+        factor   = 10 ** decimals
+        qty_adj  = int(qty * factor) / factor
+        if qty_adj <= 0:
+            qty_adj = round(qty, decimals)
+        logger.info(f"SELL {sym}: qty={qty:.8f} → adj={qty_adj:.8f} (decimals={decimals})")
         return await self._post("/api/v3/order", {
             "symbol":   sym,
             "side":     "SELL",
             "type":     "MARKET",
-            "quantity": qty,
+            "quantity": qty_adj,
         })
 
     async def get_open_orders(self, symbol: str = None) -> list:
