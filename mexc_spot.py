@@ -222,15 +222,38 @@ class MEXCSpot:
         return decimals
 
     async def sell_market(self, symbol: str, qty: float) -> Optional[dict]:
-        """Koin miqdori bilan market narxda sotish (stepSize ga mos)"""
-        sym      = symbol.replace("_", "")
+        """Koin miqdori bilan market narxda sotish.
+        Haqiqiy akkaunt balansidan to'g'ri miqdorni oladi."""
+        sym   = symbol.replace("_", "")
+        base  = sym.replace("USDT", "")
+
+        # 1. Haqiqiy akkaunt balansini ol
+        real_qty = await self.get_asset_balance(base)
+        if real_qty > 0:
+            use_qty = min(real_qty, qty)   # Ortiq sotmaymiz
+        else:
+            use_qty = qty
+
+        # 2. StepSize bo'yicha yaxlitlash
         decimals = await self.get_step_size(symbol)
-        # StepSize ga mos yaxlitlash (pastga)
         factor   = 10 ** decimals
-        qty_adj  = int(qty * factor) / factor
+        qty_adj  = int(use_qty * factor) / factor
+
+        # 3. Agar nol bo'lsa — kattaroq yaxlitlash sinab ko'r
         if qty_adj <= 0:
-            qty_adj = round(qty, decimals)
-        logger.info(f"SELL {sym}: qty={qty:.8f} → adj={qty_adj:.8f} (decimals={decimals})")
+            for d in range(max(0, decimals-1), -1, -1):
+                f = 10 ** d
+                qty_adj = int(use_qty * f) / f
+                if qty_adj > 0:
+                    decimals = d
+                    break
+
+        logger.info(f"SELL {sym}: real={real_qty:.8f} use={use_qty:.8f} adj={qty_adj:.8f} (dec={decimals})")
+
+        if qty_adj <= 0:
+            logger.error(f"SELL {sym}: qty_adj=0, sotib bo'lmadi")
+            return None
+
         return await self._post("/api/v3/order", {
             "symbol":   sym,
             "side":     "SELL",
