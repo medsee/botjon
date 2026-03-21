@@ -73,14 +73,14 @@ class SpotBot:
         self.trade_pct          = float(os.getenv("MAX_TRADE_PCT",     "0.22"))
         self.atr_sl_mult        = 1.0    # SL = 1x ATR
         self.atr_tp_mult        = 2.5    # TP = 2.5x ATR → RR 1:2.5
-        self.hard_sl_pct        = 0.022  # 2.2% o'zgarmas SL
+        self.hard_sl_pct        = 0.015  # 1.5% o'zgarmas SL (qattiq)
         self.max_daily_loss_pct = 0.08   # 8% kunlik limit
-        self.max_hold_seconds   = 480    # 8 daqiqa max
+        self.max_hold_seconds   = 300    # 5 daqiqa max
         self.min_usdt           = 1.5
 
         # ── Tezlik ──────────────────────────────────────────
         self.scan_interval    = 5
-        self.monitor_interval = 2
+        self.monitor_interval = 1
         self.top_symbols_limit = 50
         self.batch_size       = 10
         self.batch_delay      = 0.15
@@ -181,7 +181,7 @@ class SpotBot:
         tp_pct = (tp - signal.price) / signal.price * 100
 
         # SL juda katta bo'lsa o'tkazib yuborish
-        if sl_pct > 3.5:
+        if sl_pct > 2.0:
             return False
 
         logger.info(f"BUY: {signal.symbol} ${usdt_amount:.2f} @ {signal.price:.6f} TP={tp_pct:.1f}% SL={sl_pct:.1f}%")
