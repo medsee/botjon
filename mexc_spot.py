@@ -190,12 +190,14 @@ class MEXCSpot:
     async def buy_market(self, symbol: str, usdt_amount: float) -> Optional[dict]:
         """USDT bilan market narxda sotib olish"""
         sym = symbol.replace("_", "")
-        # quoteOrderQty = USDT miqdori
+        # MEXC minimal savdo: 1 USDT dan kam bo'lmasin
+        amount = max(round(usdt_amount, 2), 1.0)
+        logger.info(f"BUY {sym}: quoteOrderQty={amount}")
         return await self._post("/api/v3/order", {
             "symbol":        sym,
             "side":          "BUY",
             "type":          "MARKET",
-            "quoteOrderQty": round(usdt_amount, 2),
+            "quoteOrderQty": amount,
         })
 
     async def get_step_size(self, symbol: str) -> int:
@@ -229,10 +231,10 @@ class MEXCSpot:
 
         # 1. Haqiqiy akkaunt balansini ol
         real_qty = await self.get_asset_balance(base)
-        if real_qty > 0:
-            use_qty = min(real_qty, qty)   # Ortiq sotmaymiz
-        else:
-            use_qty = qty
+        if real_qty <= 0:
+            logger.warning(f"SELL {sym}: akkauntda {base} yo'q (real=0), bekor qilindi")
+            return {"status": "SKIPPED", "reason": "zero_balance"}
+        use_qty = min(real_qty, qty)
 
         # 2. StepSize bo'yicha yaxlitlash
         decimals = await self.get_step_size(symbol)
