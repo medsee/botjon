@@ -79,15 +79,15 @@ class SpotBot:
         # ── Risk parametrlari ────────────────────────────────
         self.max_positions      = int(os.getenv("MAX_OPEN_POSITIONS",  "3"))
         self.trade_pct          = float(os.getenv("MAX_TRADE_PCT",     "0.25"))   # 25% har savdoga
-        self.atr_sl_mult        = float(os.getenv("ATR_SL_MULT",      "1.5"))    # SL = 1.5x ATR
-        self.atr_tp_mult        = float(os.getenv("ATR_TP_MULT",      "3.0"))    # TP = 3x ATR
-        self.hard_sl_pct        = float(os.getenv("HARD_SL_PCT",      "0.025"))  # 2.5% qattiq SL
+        self.atr_sl_mult        = float(os.getenv("ATR_SL_MULT",      "1.2"))    # SL = 1.2x ATR (tighter)
+        self.atr_tp_mult        = float(os.getenv("ATR_TP_MULT",      "3.5"))    # TP = 3.5x ATR (katta RR)
+        self.hard_sl_pct        = float(os.getenv("HARD_SL_PCT",      "0.020"))  # 2.0% qattiq SL
         self.max_daily_loss_pct = float(os.getenv("MAX_DAILY_LOSS_PCT","0.08"))  # 8% kunlik limit
-        self.max_hold_seconds   = int(os.getenv("MAX_HOLD_SECONDS",   "900"))    # 15 daqiqa max
+        self.max_hold_seconds   = int(os.getenv("MAX_HOLD_SECONDS",   "600"))    # 10 daqiqa max
         self.min_usdt           = 2.0
 
         # ── Tezlik ──────────────────────────────────────────
-        self.scan_interval     = 8     # Har 8 soniyada skan
+        self.scan_interval     = 5     # Har 5 soniyada skan
         self.monitor_interval  = 2     # Har 2 soniyada monitor
         self.top_symbols_limit = 40
         self.batch_size        = 8
@@ -188,7 +188,7 @@ class SpotBot:
         # SL juda yaqin bo'lsa — o'tkazib yubor
         sl_pct = (signal.price - sl) / signal.price * 100
         tp_pct = (tp - signal.price) / signal.price * 100
-        if sl_pct > 4.0:   # 4% dan katta SL — juda xavfli
+        if sl_pct > 3.0:   # 3% dan katta SL — juda xavfli
             logger.info(f"SL juda katta ({sl_pct:.1f}%), o'tkazildi: {signal.symbol}")
             return False
         if tp_pct < 0.5:   # TP juda kichik
@@ -330,7 +330,7 @@ class SpotBot:
                     return
 
                 # 5) Break-even: 1.5% foydada SL ni kirish narxiga ko'tar
-                if not pos.breakeven_moved and pnl >= 1.5:
+                if not pos.breakeven_moved and pnl >= 1.0:
                     new_sl = pos.entry_price * 1.003
                     if new_sl > pos.sl:
                         pos.sl = new_sl
@@ -338,10 +338,10 @@ class SpotBot:
                         logger.info(f"Break-even: {symbol} SL → {new_sl:.6f}")
 
                 # 6) Trailing Stop: 2.5% foydadan keyin
-                if pnl >= 2.5:
+                if pnl >= 2.0:
                     if not pos.trailing_active:
                         pos.trailing_active = True
-                    trail = pos.peak_price * (1 - 0.012)  # peak dan 1.2% past
+                    trail = pos.peak_price * (1 - 0.008)  # peak dan 0.8% past
                     if trail > pos.sl:
                         pos.sl = trail
 
