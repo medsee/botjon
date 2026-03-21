@@ -241,6 +241,12 @@ class SpotBot:
         logger.info(f"SELL: {symbol} @ {price:.6f} PnL={pnl_pct:.2f}% ({pnl_usdt:+.3f}) | {reason}")
 
         order = await self.api.sell_market(symbol, pos.qty)
+        # SKIPPED = akkauntda token yo'q (allaqachon sotilgan)
+        if order and order.get("reason") == "zero_balance":
+            logger.warning(f"SELL {symbol}: token yo'q, pozitsiya o'chirildi")
+            if symbol in self.positions:
+                del self.positions[symbol]
+            return
         if not order:
             await asyncio.sleep(1)
             order = await self.api.sell_market(symbol, pos.qty)
@@ -432,7 +438,7 @@ class SpotBot:
                     if not ticker:
                         continue
                     price = float(ticker.get("lastPrice", 0))
-                    if price <= 0 or free * price < 0.5:
+                    if price <= 0 or free * price < 1.0:
                         continue
                     # Taxminiy pozitsiya yaratish
                     tp = price * 1.025   # 2.5% TP
@@ -475,7 +481,7 @@ class SpotBot:
                 if not ticker:
                     continue
                 price = float(ticker.get("lastPrice", 0))
-                if price <= 0 or free * price < 0.5:
+                if price <= 0 or free * price < 1.0:
                     continue
                 tp      = round(price * 1.025, 8)
                 sl      = round(price * 0.985, 8)
