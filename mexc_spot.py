@@ -201,26 +201,52 @@ class MEXCSpot:
         })
 
     async def get_step_size(self, symbol: str) -> int:
-        """Tokenning nechta kasrga yaxlitlanishini olish (stepSize dan)"""
+        """StepSize ni exchangeInfo dan olib, narxga qarab tekshirish"""
         if symbol in self._symbol_info_cache:
             return self._symbol_info_cache[symbol]
+
         sym  = symbol.replace("_", "")
-        info = await self._get("/api/v3/exchangeInfo", {"symbol": sym})
         decimals = 6  # default
-        if info:
-            for s in info.get("symbols", []):
-                if s.get("symbol") == sym:
-                    for f in s.get("filters", []):
-                        if f.get("filterType") == "LOT_SIZE":
-                            step = f.get("stepSize", "0.000001")
-                            # stepSize dan decimal sonini hisoblash
-                            if "." in step:
-                                decimals = len(step.rstrip("0").split(".")[1])
-                            else:
-                                decimals = 0
-                            break
-                    break
+
+        # 1. exchangeInfo dan olish
+        try:
+            info = await self._get("/api/v3/exchangeInfo", {"symbol": sym})
+            if info:
+                for s in info.get("symbols", []):
+                    if s.get("symbol") == sym:
+                        for f in s.get("filters", []):
+                            if f.get("filterType") == "LOT_SIZE":
+                                step = str(f.get("stepSize", "0.000001")).rstrip("0")
+                                if "." in step:
+                                    decimals = len(step.split(".")[1])
+                                else:
+                                    decimals = 0
+                                break
+                        break
+        except Exception as e:
+            logger.warning(f"exchangeInfo {sym}: {e}")
+
+        # 2. Narxga qarab decimals ni tekshirish va to'g'irlash
+        # Agar narx > 0.01 bo'lsa ko'pincha decimals <= 4
+        # Agar narx > 1 bo'lsa ko'pincha decimals <= 2
+        try:
+            ticker = self._session.get(
+                f"{BASE}/api/v3/ticker/price?symbol={sym}", timeout=5
+            )
+            price = float(ticker.json().get("price", 0))
+            if price >= 100:
+                decimals = min(decimals, 2)
+            elif price >= 10:
+                decimals = min(decimals, 3)
+            elif price >= 1:
+                decimals = min(decimals, 4)
+            elif price >= 0.01:
+                decimals = min(decimals, 5)
+        except:
+            pass
+
         self._symbol_info_cache[symbol] = decimals
+        logger.info(f"StepSize {sym}: decimals={decimals}")
         return decimals
 
     async def sell_market(self, symbol: str, qty: float) -> Optional[dict]:
@@ -256,12 +282,34 @@ class MEXCSpot:
             logger.error(f"SELL {sym}: qty_adj=0, sotib bo'lmadi")
             return None
 
-        return await self._post("/api/v3/order", {
+        result = await self._post("/api/v3/order", {
             "symbol":   sym,
             "side":     "SELL",
             "type":     "MARKET",
             "quantity": qty_adj,
         })
+
+        # Agar quantity scale xatosi bo'lsa — cache tozalab qayta urinish
+        if result is None and symbol in self._symbol_info_cache:
+            logger.warning(f"SELL {sym}: quantity xato, cache tozalanib qayta uriniladi")
+            del self._symbol_info_cache[symbol]
+            # Narxga qarab oddiy yaxlitlash
+            for d in [0, 1, 2, 3, 4]:
+                f2 = 10 ** d
+                qa = int(use_qty * f2) / f2
+                if qa > 0:
+                    logger.info(f"SELL {sym}: retry decimals={d} qty={qa}")
+                    result = await self._post("/api/v3/order", {
+                        "symbol":   sym,
+                        "side":     "SELL",
+                        "type":     "MARKET",
+                        "quantity": qa,
+                    })
+                    if result:
+                        self._symbol_info_cache[symbol] = d
+                        break
+
+        return result
 
     async def get_open_orders(self, symbol: str = None) -> list:
         params = {}
