@@ -1,6 +1,6 @@
 """
-MEXC Spot Strategy - BALANCED v4
-Tez-tez signal, lekin sliv yo'q
+MEXC Spot Strategy - BALANCED v5
+Tez signal, sliv yo'q, barcha coinlarni skan qiladi
 """
 import logging
 from dataclasses import dataclass
@@ -82,24 +82,22 @@ def atr(highs, lows, closes, period=14):
     return sum(trs[-period:]) / period
 
 
-# Xavfli meme/pump tokenlar — hech qachon kirmaymiz
+# Faqat haqiqiy meme/scam tokenlar
 BLACKLISTED_TOKENS = {
     "CARROT", "MEME", "PEPE", "SHIB", "FLOKI", "BONK", "WIF",
     "TURBO", "DEGEN", "NEIRO", "BOME", "MYRO", "POPCAT",
     "PONKE", "SLERF", "TRUMP", "MELANIA", "FARTCOIN", "GOAT",
     "MOODENG", "PNUT", "ACT", "AIDOGE", "BABYDOGE", "SAMO",
     "KISHU", "AKITA", "HOGE", "ELON", "CATE", "VOLT",
-    # Qo'shimcha xavfli micro-cap tokenlar
-    "NEXFI", "REPAI", "RIVER", "WLFI", "CRTR", "RDNT",
-    "PSAI", "TONIXAI", "RTX", "DEGO", "NEXFI", "ENA",
+    "NEXFI", "REPAI", "WLFI", "TONIXAI",
 }
 
 
 class SpotStrategy:
     def __init__(self):
-        self.min_strength = 0.45   # Oldin 0.38 — endi qattiqroq (kam signal, lekin sifatli)
-        self.min_atr_pct  = 0.003  # 0.3% minimal volatillik (oldin 0.2%)
-        self.max_atr_pct  = 0.04   # 4% maksimal (oldin 5%)
+        self.min_strength = 0.38   # Asl qiymat — signal chiqadi
+        self.min_atr_pct  = 0.0015 # 0.15% minimal volatillik
+        self.max_atr_pct  = 0.06   # 6% maksimal
 
     def analyze(self, symbol: str, klines: list, ticker: dict) -> Optional[SpotSignal]:
         if len(klines) < 30:
@@ -117,8 +115,8 @@ class SpotStrategy:
         if price <= 0:
             return None
 
-        # Narx filtri: $0.001 dan past coinlar xavfli (katta spread, manipulyatsiya)
-        if price < 0.001:
+        # Narx filtri: $0.00001 dan past — juda xavfli
+        if price < 0.00001:
             return None
 
         # Xavfli token filtri
@@ -152,21 +150,21 @@ class SpotStrategy:
         bull1 = closes[-1] > opens[-1]
         bull2 = closes[-2] > opens[-2] if len(closes) >= 2 else True
 
-        # ── QATTIQ STOP SHARTLAR (sliv himoyasi) ─────────────
-        # 1. RSI juda yuqori — overbought, xavfli
-        if rsi7 > 65:   # Oldin 72 — endi qattiqroq
+        # ── STOP SHARTLAR ─────────────────────────────────────
+        # Juda overbought
+        if rsi7 > 75:
             return None
-        # 2. BB yuqori zonada — qimmatga sotib olma
-        if bb_pct > 0.70:  # Oldin 0.80
+        # BB juda yuqori — qimmatga sotib olma
+        if bb_pct > 0.85:
             return None
-        # 3. Kuchli tushish momenti — bozor tushyapti
-        if mom3 < -3.0:  # Oldin -4.0
+        # Kuchli tushish
+        if mom3 < -5.0:
             return None
-        # 4. Hajm nol — likvidlik yo'q
-        if vol_ratio < 0.5:  # Oldin 0.3 — endi kattaroq hajm talab qilinadi
+        # Hajm mutlaqo yo'q
+        if vol_ratio < 0.2:
             return None
-        # 5. Narx juda tez ko'tardi (pump) — kirma
-        if mom3 > 5.0:
+        # Juda kuchli pump — kirma
+        if mom3 > 8.0:
             return None
 
         # ── BALL HISOBLASH ───────────────────────────────────
@@ -179,9 +177,9 @@ class SpotStrategy:
         elif e5 > e10:
             score += 0.08; reasons.append("EMA↗")
         elif e5 < e10:
-            score -= 0.05  # Tushish trendi — minus
+            score -= 0.05
 
-        # 2. RSI (eng muhim)
+        # 2. RSI (eng muhim signal)
         if rsi7 < 20:
             score += 0.35; reasons.append(f"RSI💥{rsi7:.0f}")
         elif rsi7 < 30:
@@ -191,21 +189,21 @@ class SpotStrategy:
         elif rsi7 < 50:
             score += 0.08; reasons.append(f"RSI{rsi7:.0f}")
         elif rsi7 > 65:
-            score -= 0.10  # Overbought minus
+            score -= 0.10
 
         # 3. StochRSI
-        if srsi_k < 15:
-            score += 0.22; reasons.append(f"SRSI💥{srsi_k:.0f}")
-        elif srsi_k < 25:
-            score += 0.16; reasons.append(f"SRSI🔥{srsi_k:.0f}")
-        elif srsi_k < 40:
+        if srsi_k < 10:
+            score += 0.25; reasons.append(f"SRSI💥{srsi_k:.0f}")
+        elif srsi_k < 20:
+            score += 0.18; reasons.append(f"SRSI🔥{srsi_k:.0f}")
+        elif srsi_k < 35:
             score += 0.10; reasons.append(f"SRSI↓{srsi_k:.0f}")
-        elif srsi_k < 55:
+        elif srsi_k < 50:
             score += 0.04
-        elif srsi_k > 75:
+        elif srsi_k > 80:
             score -= 0.08
 
-        # StochRSI kesishish (K D dan yuqori — burilish belgisi)
+        # StochRSI kesishish
         if srsi_k > srsi_d and srsi_k < 50:
             score += 0.07; reasons.append("SRSI↗")
 
@@ -218,7 +216,7 @@ class SpotStrategy:
             score += 0.09; reasons.append("BB↓")
         elif bb_pct < 0.45:
             score += 0.04
-        elif bb_pct > 0.70:
+        elif bb_pct > 0.75:
             score -= 0.07
 
         # 5. Hajm
@@ -226,11 +224,11 @@ class SpotStrategy:
             score += 0.14; reasons.append(f"Vol💥{vol_ratio:.1f}x")
         elif vol_ratio > 1.8:
             score += 0.09; reasons.append(f"Vol🔥{vol_ratio:.1f}x")
-        elif vol_ratio > 1.3:
+        elif vol_ratio > 1.2:
             score += 0.05; reasons.append(f"Vol↑{vol_ratio:.1f}x")
 
         # 6. Momentum
-        if 0.2 < mom3 < 3.0:
+        if 0.1 < mom3 < 4.0:
             score += 0.08; reasons.append(f"Mom↑{mom3:.1f}%")
         elif mom3 > 0:
             score += 0.03
