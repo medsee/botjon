@@ -1,6 +1,6 @@
 """
-MEXC Spot Strategy - FAST v7
-Tez signal, ko'p savdo, komissiyadan katta TP
+MEXC Spot Strategy - PRECISION v8
+Kam savdo, faqat A+ signallar, komissiyadan 10x katta TP
 """
 import logging
 from dataclasses import dataclass
@@ -94,12 +94,13 @@ BLACKLISTED_TOKENS = {
 
 class SpotStrategy:
     def __init__(self):
-        self.min_strength = 0.40
-        self.min_atr_pct  = 0.003
-        self.max_atr_pct  = 0.07
+        # Faqat eng kuchli signallar
+        self.min_strength = 0.60
+        self.min_atr_pct  = 0.005   # Minimal 0.5% harakat
+        self.max_atr_pct  = 0.06
 
     def analyze(self, symbol: str, klines: list, ticker: dict) -> Optional[SpotSignal]:
-        if len(klines) < 30:
+        if len(klines) < 50:
             return None
         try:
             closes = [float(k.get("close", 0)) for k in klines]
@@ -123,107 +124,147 @@ class SpotStrategy:
         if atr_pct < self.min_atr_pct or atr_pct > self.max_atr_pct:
             return None
 
+        # Indikatorlar
         e5  = ema(closes, 5)
         e10 = ema(closes, 10)
         e21 = ema(closes, 21)
-        rsi7  = rsi(closes, 7)
+        e50 = ema(closes, 50)
+
+        rsi7   = rsi(closes, 7)
+        rsi14  = rsi(closes, 14)
         srsi_k, srsi_d = stoch_rsi(closes, 14, 14)
-        bb_up, bb_mid, bb_lo = bollinger(closes, 20)
+
+        bb_up, bb_mid, bb_lo = bollinger(closes, 20, 2.0)
         bb_width = bb_up - bb_lo
         bb_pct   = (price - bb_lo) / bb_width if bb_width > 0 else 0.5
-        avg_vol   = sum(vols[-10:]) / 10 if len(vols) >= 10 else 1
+
+        avg_vol   = sum(vols[-20:]) / 20 if len(vols) >= 20 else 1
         vol_ratio = vols[-1] / avg_vol if avg_vol > 0 else 1
-        mom3 = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes) >= 4 else 0
+
+        mom3  = (closes[-1] - closes[-4])  / closes[-4]  * 100 if len(closes) >= 4  else 0
+        mom10 = (closes[-1] - closes[-11]) / closes[-11] * 100 if len(closes) >= 11 else 0
+
         bull1 = closes[-1] > opens[-1]
         bull2 = closes[-2] > opens[-2] if len(closes) >= 2 else True
+        bull3 = closes[-3] > opens[-3] if len(closes) >= 3 else True
 
-        # ── STOP SHARTLAR ─────────────────────────────────────
-        if rsi7 > 75:        return None
-        if bb_pct > 0.88:    return None
-        if mom3 < -7.0:      return None
-        if vol_ratio < 0.15: return None
-        if mom3 > 12.0:      return None
+        # ── A+ SIGNAL SHARTLARI ──────────────────────────────
+        # Trend pastga bo'lsa — kirma
+        if e5 < e21 < e50:
+            return None
+        # Juda overbought
+        if rsi7 > 70:
+            return None
+        if rsi14 > 65:
+            return None
+        # BB juda yuqori
+        if bb_pct > 0.80:
+            return None
+        # Kuchli tushish
+        if mom3 < -5.0:
+            return None
+        if mom10 < -8.0:
+            return None
+        # Hajm yo'q
+        if vol_ratio < 0.2:
+            return None
+        # Pump ichida
+        if mom3 > 8.0:
+            return None
 
         # ── BALL HISOBLASH ───────────────────────────────────
         score   = 0.0
         reasons = []
 
-        # 1. EMA trend
-        if e5 > e10 > e21:
-            score += 0.15; reasons.append("EMA⬆️")
+        # 1. EMA trend — muhim
+        if e5 > e10 > e21 > e50:
+            score += 0.20; reasons.append("EMA⬆️⬆️")
+        elif e5 > e10 > e21:
+            score += 0.14; reasons.append("EMA⬆️")
         elif e5 > e10:
-            score += 0.08; reasons.append("EMA↗")
-        elif e5 < e10 < e21:
-            score -= 0.06
-
-        # 2. RSI — asosiy signal
-        if rsi7 < 15:
-            score += 0.42; reasons.append(f"RSI💥{rsi7:.0f}")
-        elif rsi7 < 25:
-            score += 0.32; reasons.append(f"RSI🔥{rsi7:.0f}")
-        elif rsi7 < 35:
-            score += 0.22; reasons.append(f"RSI↓{rsi7:.0f}")
-        elif rsi7 < 45:
-            score += 0.12; reasons.append(f"RSI{rsi7:.0f}")
-        elif rsi7 < 55:
-            score += 0.04
-        elif rsi7 > 65:
-            score -= 0.12
-
-        # 3. StochRSI
-        if srsi_k < 8:
-            score += 0.30; reasons.append(f"SRSI💥{srsi_k:.0f}")
-        elif srsi_k < 18:
-            score += 0.22; reasons.append(f"SRSI🔥{srsi_k:.0f}")
-        elif srsi_k < 30:
-            score += 0.13; reasons.append(f"SRSI↓{srsi_k:.0f}")
-        elif srsi_k < 50:
-            score += 0.05
-        elif srsi_k > 80:
+            score += 0.07; reasons.append("EMA↗")
+        elif e5 < e10:
             score -= 0.10
 
-        if srsi_k > srsi_d and srsi_k < 50:
-            score += 0.08; reasons.append("SRSI↗")
+        # 2. RSI7 — eng muhim signal
+        if rsi7 < 10:
+            score += 0.45; reasons.append(f"RSI💥{rsi7:.0f}")
+        elif rsi7 < 20:
+            score += 0.35; reasons.append(f"RSI🔥{rsi7:.0f}")
+        elif rsi7 < 30:
+            score += 0.25; reasons.append(f"RSI↓{rsi7:.0f}")
+        elif rsi7 < 40:
+            score += 0.14; reasons.append(f"RSI{rsi7:.0f}")
+        elif rsi7 < 50:
+            score += 0.06
+        elif rsi7 > 60:
+            score -= 0.15
 
-        # 4. Bollinger
-        if price < bb_lo:
-            score += 0.28; reasons.append("BB💥")
-        elif bb_pct < 0.10:
-            score += 0.20; reasons.append("BB🔥")
-        elif bb_pct < 0.25:
-            score += 0.12; reasons.append("BB↓")
-        elif bb_pct < 0.42:
-            score += 0.05
-        elif bb_pct > 0.75:
+        # 3. RSI14 tasdiqlash
+        if rsi14 < 30:
+            score += 0.12; reasons.append(f"RSI14↓{rsi14:.0f}")
+        elif rsi14 < 40:
+            score += 0.06
+        elif rsi14 > 55:
             score -= 0.08
 
-        # 5. Hajm
-        if vol_ratio > 3.0:
-            score += 0.16; reasons.append(f"Vol💥{vol_ratio:.1f}x")
-        elif vol_ratio > 2.0:
-            score += 0.11; reasons.append(f"Vol🔥{vol_ratio:.1f}x")
-        elif vol_ratio > 1.3:
-            score += 0.06; reasons.append(f"Vol↑{vol_ratio:.1f}x")
+        # 4. StochRSI
+        if srsi_k < 5:
+            score += 0.32; reasons.append(f"SRSI💥{srsi_k:.0f}")
+        elif srsi_k < 15:
+            score += 0.24; reasons.append(f"SRSI🔥{srsi_k:.0f}")
+        elif srsi_k < 25:
+            score += 0.15; reasons.append(f"SRSI↓{srsi_k:.0f}")
+        elif srsi_k < 40:
+            score += 0.07
+        elif srsi_k > 75:
+            score -= 0.12
 
-        # 6. Momentum
-        if 0.2 < mom3 < 5.0:
+        # Kesishish bonusi
+        if srsi_k > srsi_d and srsi_k < 40:
+            score += 0.10; reasons.append("SRSI↗")
+
+        # 5. Bollinger
+        if price < bb_lo:
+            score += 0.30; reasons.append("BB💥")
+        elif bb_pct < 0.08:
+            score += 0.22; reasons.append("BB🔥")
+        elif bb_pct < 0.20:
+            score += 0.13; reasons.append("BB↓")
+        elif bb_pct < 0.38:
+            score += 0.05
+        elif bb_pct > 0.70:
+            score -= 0.10
+
+        # 6. Hajm — tasdiqlash
+        if vol_ratio > 3.5:
+            score += 0.18; reasons.append(f"Vol💥{vol_ratio:.1f}x")
+        elif vol_ratio > 2.5:
+            score += 0.13; reasons.append(f"Vol🔥{vol_ratio:.1f}x")
+        elif vol_ratio > 1.5:
+            score += 0.07; reasons.append(f"Vol↑{vol_ratio:.1f}x")
+
+        # 7. Momentum
+        if 0.3 < mom3 < 4.0:
             score += 0.09; reasons.append(f"Mom↑{mom3:.1f}%")
         elif mom3 > 0:
             score += 0.03
-        elif mom3 < -2.5:
-            score -= 0.08
+        elif mom3 < -2.0:
+            score -= 0.10
 
-        # 7. Sham pattern
-        if bull1 and bull2:
-            score += 0.07; reasons.append("🕯💚")
+        # 8. Sham pattern — 3 ta yashil sham
+        if bull1 and bull2 and bull3:
+            score += 0.10; reasons.append("🕯💚💚💚")
+        elif bull1 and bull2:
+            score += 0.06; reasons.append("🕯💚💚")
         elif bull1:
-            score += 0.03
+            score += 0.02
 
         score = max(0.0, min(score, 1.0))
 
         logger.info(
             f"[SIG] {symbol} | score={score:.2f} | "
-            f"RSI={rsi7:.0f} SRSI={srsi_k:.0f} | "
+            f"RSI={rsi7:.0f}/{rsi14:.0f} SRSI={srsi_k:.0f} | "
             f"BB={bb_pct:.2f} | Vol={vol_ratio:.1f}x | "
             f"ATR={atr_pct*100:.2f}% | mom={mom3:.2f}%"
         )
