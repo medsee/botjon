@@ -1,6 +1,6 @@
 """
-MEXC Spot Scalping Bot - BALANCED v5
-Barcha coinlarni skan, tez ochadi, sliv yo'q
+MEXC Spot Scalping Bot - TURBO v6
+Katta TP, aqlli SL, barcha coinlar, tez savdo
 """
 import asyncio
 import logging
@@ -69,30 +69,35 @@ class SpotBot:
         self.strategy = SpotStrategy()
 
         # ── Risk parametrlari ────────────────────────────────
-        self.max_positions      = int(os.getenv("MAX_OPEN_POSITIONS",  "4"))
-        self.trade_pct          = float(os.getenv("MAX_TRADE_PCT",     "0.22"))
-        self.atr_sl_mult        = 1.2    # SL = 1.2x ATR
-        self.atr_tp_mult        = 2.8    # TP = 2.8x ATR → RR 1:2.3
-        self.hard_sl_pct        = 0.022  # 2.2% o'zgarmas HardSL
+        self.max_positions      = int(os.getenv("MAX_OPEN_POSITIONS", "4"))
+        self.trade_pct          = float(os.getenv("MAX_TRADE_PCT", "0.22"))
+
+        # TP/SL: ATR ga asoslangan, lekin minimal chegara bor
+        self.atr_sl_mult        = 1.0    # SL = 1x ATR
+        self.atr_tp_mult        = 3.5    # TP = 3.5x ATR → yaxshi RR
+        self.min_tp_pct         = 0.015  # Minimal TP 1.5% (komissiya + foyda)
+        self.min_sl_pct         = 0.008  # Minimal SL 0.8% (juda tez urmasin)
+        self.hard_sl_pct        = 0.030  # 3% HardSL (katta narx tebranishlari uchun)
+        self.max_sl_pct         = 0.035  # SL 3.5% dan oshsa — o'tkazib yubor
         self.max_daily_loss_pct = 0.06   # 6% kunlik limit
-        self.max_hold_seconds   = 420    # 7 daqiqa max
+        self.max_hold_seconds   = 600    # 10 daqiqa max (tezroq chiqish)
         self.min_usdt           = 2.0
 
         # ── Skan sozlamalari ─────────────────────────────────
-        self.scan_interval     = 5
+        self.scan_interval     = 4       # 4 sekundda bir skan
         self.monitor_interval  = 1
-        self.top_symbols_limit = 150    # Ko'proq coin skan
-        self.batch_size        = 10
-        self.batch_delay       = 0.1
-        self.min_price         = 0.00001  # $0.00001 dan past — xavfli
-        self.min_volume        = 50_000   # Minimal 24h hajm $50k
+        self.top_symbols_limit = 200     # Barcha coinlar
+        self.batch_size        = 15      # Tezroq skan
+        self.batch_delay       = 0.08
+        self.min_price         = 0.00001
+        self.min_volume        = 30_000  # $30k dan yuqori
 
         self.positions: dict[str, SpotPosition] = {}
         self.blacklist: set   = set()
         self.blacklist_time: dict = {}
         self.symbol_cache: list = []
         self.cache_time: float  = 0
-        self.cache_ttl: int     = 180  # 3 daqiqada yangilanadi
+        self.cache_ttl: int     = 120    # 2 daqiqada yangilanadi
 
         self.telegram_token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -152,12 +157,19 @@ class SpotBot:
         return self.symbol_cache
 
     def calc_tp_sl(self, entry: float, atr_val: float):
-        sl      = entry - self.atr_sl_mult * atr_val
-        tp      = entry + self.atr_tp_mult * atr_val
+        # ATR ga asoslangan TP/SL
+        raw_sl = entry - self.atr_sl_mult * atr_val
+        raw_tp = entry + self.atr_tp_mult * atr_val
+
+        # Minimal TP/SL chegaralari
+        min_tp = entry * (1 + self.min_tp_pct)
+        min_sl = entry * (1 - self.min_sl_pct)
         hard_sl = entry * (1 - self.hard_sl_pct)
-        sl      = max(sl, hard_sl)
-        if (tp - entry) / entry < 0.006:
-            tp = entry * 1.006
+
+        tp = max(raw_tp, min_tp)
+        sl = min(raw_sl, min_sl)
+        sl = max(sl, hard_sl)   # SL hard_sl dan past bo'lmasin
+
         return round(tp, 8), round(sl, 8), round(hard_sl, 8)
 
     async def open_position(self, signal: SpotSignal, balance: float) -> bool:
@@ -166,7 +178,6 @@ class SpotBot:
         if len(self.positions) >= self.max_positions:
             return False
 
-        # Vaqtinchalik blacklist (3 daqiqa)
         if signal.symbol in self.blacklist_time:
             if time.time() - self.blacklist_time[signal.symbol] < 180:
                 return False
@@ -182,7 +193,8 @@ class SpotBot:
         sl_pct = (signal.price - sl) / signal.price * 100
         tp_pct = (tp - signal.price) / signal.price * 100
 
-        if sl_pct > 3.5:
+        # SL juda katta bo'lsa o'tkazib yubor
+        if sl_pct > self.max_sl_pct * 100:
             return False
 
         # Minimum miqdor tekshiruvi
@@ -190,13 +202,10 @@ class SpotBot:
         min_qty  = 1.0 / (10 ** decimals) if decimals >= 0 else 1.0
         expected_qty = usdt_amount / signal.price
         if expected_qty < min_qty:
-            logger.warning(
-                f"BUY o'tkazib yuborildi {signal.symbol}: "
-                f"qty={expected_qty:.8f} < min={min_qty:.8f}"
-            )
+            logger.warning(f"BUY o'tkazib: {signal.symbol} qty={expected_qty:.8f} < min={min_qty:.8f}")
             return False
 
-        logger.info(f"BUY: {signal.symbol} ${usdt_amount:.2f} @ {signal.price:.6f} TP={tp_pct:.1f}% SL={sl_pct:.1f}%")
+        logger.info(f"BUY: {signal.symbol} ${usdt_amount:.2f} @ {signal.price:.6f} TP=+{tp_pct:.1f}% SL=-{sl_pct:.1f}%")
 
         order = await self.api.buy_market(signal.symbol, usdt_amount)
         if not order:
@@ -252,7 +261,7 @@ class SpotBot:
 
         order = await self.api.sell_market(symbol, pos.qty)
         if order and order.get("reason") == "zero_balance":
-            logger.warning(f"SELL {symbol}: token yo'q, pozitsiya o'chirildi")
+            logger.warning(f"SELL {symbol}: token yo'q, o'chirildi")
             if symbol in self.positions:
                 del self.positions[symbol]
             return
@@ -268,16 +277,14 @@ class SpotBot:
             self.daily_loss -= abs(pnl_usdt)
             self.blacklist_time[symbol] = time.time()
 
-        del self.positions[symbol]
+        if symbol in self.positions:
+            del self.positions[symbol]
 
         total = self.win_count + self.loss_count
         wr    = self.win_count / total * 100 if total > 0 else 0
         hold  = int(pos.age_seconds)
 
-        if won:
-            header = f"{S['trophy']} *FOYDA!* {S['chart_up']}{S['fire']}"
-        else:
-            header = f"{S['cry']} *Zarar* {S['chart_dn']}"
+        header = f"{S['trophy']} *FOYDA!* {S['chart_up']}{S['fire']}" if won else f"{S['cry']} *Zarar* {S['chart_dn']}"
 
         await self.notify(
             f"{header}\n\n"
@@ -307,7 +314,7 @@ class SpotBot:
                 if price > pos.peak_price:
                     pos.peak_price = price
 
-                # 1) HardSL
+                # 1) HardSL — o'zgarmas chegara
                 if price <= pos.hard_sl:
                     await self.close_position(symbol, f"{S['shield']}HardSL {pnl:.1f}%", price)
                     return
@@ -327,18 +334,18 @@ class SpotBot:
                     await self.close_position(symbol, f"{S['shield']}SL {pnl:.1f}%", price)
                     return
 
-                # 5) Break-even: 1% foydada SL = kirish narxi
-                if not pos.breakeven_moved and pnl >= 1.0:
-                    new_sl = pos.entry_price * 1.001
+                # 5) Break-even: 1.2% foydada SL = kirish + 0.2%
+                if not pos.breakeven_moved and pnl >= 1.2:
+                    new_sl = pos.entry_price * 1.002
                     if new_sl > pos.sl:
                         pos.sl = new_sl
                         pos.breakeven_moved = True
                         logger.info(f"Break-even: {symbol} SL={new_sl:.6f}")
 
-                # 6) Trailing: 1.5% foydadan, peak dan 0.8% past
-                if pnl >= 1.5:
+                # 6) Trailing stop: 2% foydadan, peak dan 1% past
+                if pnl >= 2.0:
                     pos.trailing_active = True
-                    trail = pos.peak_price * 0.992
+                    trail = pos.peak_price * 0.990
                     if trail > pos.sl:
                         pos.sl = trail
 
@@ -425,10 +432,9 @@ class SpotBot:
                 if ok:
                     opened  += 1
                     balance -= balance * self.trade_pct
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.15)
 
     async def sync_positions(self):
-        """MEXC dagi haqiqiy balanslarni tekshirib sinxronlashtirish"""
         try:
             r = await self.api._get("/api/v3/account", signed=True)
             if not r:
@@ -448,9 +454,9 @@ class SpotBot:
                 price = float(ticker.get("lastPrice", 0))
                 if price <= 0 or free * price < 1.0:
                     continue
-                tp      = round(price * 1.025, 8)
-                sl      = round(price * 0.985, 8)
-                hard_sl = round(price * 0.980, 8)
+                tp      = round(price * 1.03, 8)
+                sl      = round(price * 0.975, 8)
+                hard_sl = round(price * 0.970, 8)
                 pos = SpotPosition(
                     symbol=symbol, entry_price=price,
                     qty=free, tp=tp, sl=sl, hard_sl=hard_sl,
@@ -465,7 +471,7 @@ class SpotBot:
             logger.error(f"Sinxron xato: {e}")
 
     async def run(self):
-        logger.info("Spot Bot BALANCED v5 ishga tushdi!")
+        logger.info("Spot Bot TURBO v6 ishga tushdi!")
         self.running = True
 
         balance = await self.api.get_balance("USDT")
@@ -474,10 +480,10 @@ class SpotBot:
         await self.sync_positions()
 
         await self.notify(
-            f"{S['dragon']} *MEXC Spot Bot v5* {S['fire']}\n\n"
+            f"{S['dragon']} *MEXC Spot Bot TURBO v6* {S['fire']}\n\n"
             f"{S['bank']} Balans: `{balance:.2f} USDT`\n"
-            f"{S['shield']} SL: `ATR x1.2` | TP: `ATR x2.8`\n"
-            f"{S['target']} HardSL: `2.2%` | Max: `7 daqiqa`\n"
+            f"{S['shield']} SL: `ATR x1.0` min `0.8%` | TP: `ATR x3.5` min `1.5%`\n"
+            f"{S['target']} HardSL: `3%` | Max: `10 daqiqa`\n"
             f"{S['stats']} Max pozitsiya: `{self.max_positions}`\n"
             f"{S['bolt']} Skan: `{self.scan_interval}s` | Coinlar: `{self.top_symbols_limit}`\n"
             f"{S['rocket']} Darhol analiz boshlanmoqda..."
