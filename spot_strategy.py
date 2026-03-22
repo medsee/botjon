@@ -1,6 +1,6 @@
 """
-MEXC Spot Strategy - TURBO v6
-Tez signal, katta TP, aqlli SL
+MEXC Spot Strategy - FAST v7
+Tez signal, ko'p savdo, komissiyadan katta TP
 """
 import logging
 from dataclasses import dataclass
@@ -82,22 +82,21 @@ def atr(highs, lows, closes, period=14):
     return sum(trs[-period:]) / period
 
 
-# Faqat haqiqiy scam/meme tokenlar
 BLACKLISTED_TOKENS = {
     "CARROT", "MEME", "PEPE", "SHIB", "FLOKI", "BONK", "WIF",
     "TURBO", "DEGEN", "NEIRO", "BOME", "MYRO", "POPCAT",
     "PONKE", "SLERF", "TRUMP", "MELANIA", "FARTCOIN", "GOAT",
     "MOODENG", "PNUT", "ACT", "AIDOGE", "BABYDOGE", "SAMO",
     "KISHU", "AKITA", "HOGE", "ELON", "CATE", "VOLT",
-    "NEXFI", "REPAI", "WLFI", "TONIXAI",
+    "NEXFI", "REPAI", "WLFI", "TONIXAI", "BANANAS31",
 }
 
 
 class SpotStrategy:
     def __init__(self):
-        self.min_strength = 0.42   # Sifatli signal
-        self.min_atr_pct  = 0.003  # Minimal 0.3% harakat
-        self.max_atr_pct  = 0.08   # Maksimal 8%
+        self.min_strength = 0.40
+        self.min_atr_pct  = 0.003
+        self.max_atr_pct  = 0.07
 
     def analyze(self, symbol: str, klines: list, ticker: dict) -> Optional[SpotSignal]:
         if len(klines) < 30:
@@ -124,7 +123,6 @@ class SpotStrategy:
         if atr_pct < self.min_atr_pct or atr_pct > self.max_atr_pct:
             return None
 
-        # Indikatorlar
         e5  = ema(closes, 5)
         e10 = ema(closes, 10)
         e21 = ema(closes, 21)
@@ -140,11 +138,11 @@ class SpotStrategy:
         bull2 = closes[-2] > opens[-2] if len(closes) >= 2 else True
 
         # ── STOP SHARTLAR ─────────────────────────────────────
-        if rsi7 > 72:       return None   # Overbought
-        if bb_pct > 0.82:   return None   # BB yuqori
-        if mom3 < -6.0:     return None   # Kuchli tushish
-        if vol_ratio < 0.15: return None  # Hajm yo'q
-        if mom3 > 10.0:     return None   # Kuchli pump
+        if rsi7 > 75:        return None
+        if bb_pct > 0.88:    return None
+        if mom3 < -7.0:      return None
+        if vol_ratio < 0.15: return None
+        if mom3 > 12.0:      return None
 
         # ── BALL HISOBLASH ───────────────────────────────────
         score   = 0.0
@@ -156,46 +154,47 @@ class SpotStrategy:
         elif e5 > e10:
             score += 0.08; reasons.append("EMA↗")
         elif e5 < e10 < e21:
-            score -= 0.08  # Pastga trend — kuchliroq jarima
+            score -= 0.06
 
-        # 2. RSI — eng kuchli signal
+        # 2. RSI — asosiy signal
         if rsi7 < 15:
-            score += 0.40; reasons.append(f"RSI💥{rsi7:.0f}")
+            score += 0.42; reasons.append(f"RSI💥{rsi7:.0f}")
         elif rsi7 < 25:
-            score += 0.30; reasons.append(f"RSI🔥{rsi7:.0f}")
+            score += 0.32; reasons.append(f"RSI🔥{rsi7:.0f}")
         elif rsi7 < 35:
-            score += 0.20; reasons.append(f"RSI↓{rsi7:.0f}")
+            score += 0.22; reasons.append(f"RSI↓{rsi7:.0f}")
         elif rsi7 < 45:
-            score += 0.10; reasons.append(f"RSI{rsi7:.0f}")
-        elif rsi7 > 60:
+            score += 0.12; reasons.append(f"RSI{rsi7:.0f}")
+        elif rsi7 < 55:
+            score += 0.04
+        elif rsi7 > 65:
             score -= 0.12
 
         # 3. StochRSI
         if srsi_k < 8:
-            score += 0.28; reasons.append(f"SRSI💥{srsi_k:.0f}")
+            score += 0.30; reasons.append(f"SRSI💥{srsi_k:.0f}")
         elif srsi_k < 18:
-            score += 0.20; reasons.append(f"SRSI🔥{srsi_k:.0f}")
-        elif srsi_k < 32:
-            score += 0.12; reasons.append(f"SRSI↓{srsi_k:.0f}")
+            score += 0.22; reasons.append(f"SRSI🔥{srsi_k:.0f}")
+        elif srsi_k < 30:
+            score += 0.13; reasons.append(f"SRSI↓{srsi_k:.0f}")
         elif srsi_k < 50:
             score += 0.05
-        elif srsi_k > 82:
+        elif srsi_k > 80:
             score -= 0.10
 
-        # Kesishish bonusi
-        if srsi_k > srsi_d and srsi_k < 45:
+        if srsi_k > srsi_d and srsi_k < 50:
             score += 0.08; reasons.append("SRSI↗")
 
         # 4. Bollinger
         if price < bb_lo:
-            score += 0.25; reasons.append("BB💥")
-        elif bb_pct < 0.12:
-            score += 0.18; reasons.append("BB🔥")
+            score += 0.28; reasons.append("BB💥")
+        elif bb_pct < 0.10:
+            score += 0.20; reasons.append("BB🔥")
         elif bb_pct < 0.25:
-            score += 0.10; reasons.append("BB↓")
+            score += 0.12; reasons.append("BB↓")
         elif bb_pct < 0.42:
-            score += 0.04
-        elif bb_pct > 0.72:
+            score += 0.05
+        elif bb_pct > 0.75:
             score -= 0.08
 
         # 5. Hajm
@@ -207,14 +206,14 @@ class SpotStrategy:
             score += 0.06; reasons.append(f"Vol↑{vol_ratio:.1f}x")
 
         # 6. Momentum
-        if 0.3 < mom3 < 5.0:
+        if 0.2 < mom3 < 5.0:
             score += 0.09; reasons.append(f"Mom↑{mom3:.1f}%")
         elif mom3 > 0:
             score += 0.03
         elif mom3 < -2.5:
             score -= 0.08
 
-        # 7. Sham
+        # 7. Sham pattern
         if bull1 and bull2:
             score += 0.07; reasons.append("🕯💚")
         elif bull1:
