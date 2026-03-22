@@ -89,14 +89,17 @@ BLACKLISTED_TOKENS = {
     "PONKE", "SLERF", "TRUMP", "MELANIA", "FARTCOIN", "GOAT",
     "MOODENG", "PNUT", "ACT", "AIDOGE", "BABYDOGE", "SAMO",
     "KISHU", "AKITA", "HOGE", "ELON", "CATE", "VOLT",
+    # Qo'shimcha xavfli micro-cap tokenlar
+    "NEXFI", "REPAI", "RIVER", "WLFI", "CRTR", "RDNT",
+    "PSAI", "TONIXAI", "RTX", "DEGO", "NEXFI", "ENA",
 }
 
 
 class SpotStrategy:
     def __init__(self):
-        self.min_strength = 0.38
-        self.min_atr_pct  = 0.002  # 0.2% minimal volatillik
-        self.max_atr_pct  = 0.05   # 5% maksimal (eski 8%)
+        self.min_strength = 0.45   # Oldin 0.38 — endi qattiqroq (kam signal, lekin sifatli)
+        self.min_atr_pct  = 0.003  # 0.3% minimal volatillik (oldin 0.2%)
+        self.max_atr_pct  = 0.04   # 4% maksimal (oldin 5%)
 
     def analyze(self, symbol: str, klines: list, ticker: dict) -> Optional[SpotSignal]:
         if len(klines) < 30:
@@ -112,6 +115,10 @@ class SpotStrategy:
 
         price = closes[-1]
         if price <= 0:
+            return None
+
+        # Narx filtri: $0.001 dan past coinlar xavfli (katta spread, manipulyatsiya)
+        if price < 0.001:
             return None
 
         # Xavfli token filtri
@@ -147,16 +154,19 @@ class SpotStrategy:
 
         # ── QATTIQ STOP SHARTLAR (sliv himoyasi) ─────────────
         # 1. RSI juda yuqori — overbought, xavfli
-        if rsi7 > 72:
+        if rsi7 > 65:   # Oldin 72 — endi qattiqroq
             return None
         # 2. BB yuqori zonada — qimmatga sotib olma
-        if bb_pct > 0.80:
+        if bb_pct > 0.70:  # Oldin 0.80
             return None
         # 3. Kuchli tushish momenti — bozor tushyapti
-        if mom3 < -4.0:
+        if mom3 < -3.0:  # Oldin -4.0
             return None
         # 4. Hajm nol — likvidlik yo'q
-        if vol_ratio < 0.3:
+        if vol_ratio < 0.5:  # Oldin 0.3 — endi kattaroq hajm talab qilinadi
+            return None
+        # 5. Narx juda tez ko'tardi (pump) — kirma
+        if mom3 > 5.0:
             return None
 
         # ── BALL HISOBLASH ───────────────────────────────────
