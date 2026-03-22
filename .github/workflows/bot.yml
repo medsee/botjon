@@ -1,36 +1,36 @@
 name: MEXC Spot Bot ULTRA PRO
+
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */5 * * *'   # Har 5 soatda qayta ishga tushadi
 
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 290     # 4 soat 50 daqiqa (5 soatdan kam)
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install
         run: pip install python-telegram-bot==21.0.1 aiohttp python-dotenv requests
+
       - name: Kill old bots
         run: |
           curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/deleteWebhook?drop_pending_updates=true"
-          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/close"
-          sleep 10
+          sleep 5
+
       - name: Run Bot
         run: python main.py
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-          MEXC_API_KEY:       ${{ secrets.MEXC_API_KEY }}
-          MEXC_SECRET_KEY:    ${{ secrets.MEXC_SECRET_KEY }}
-          MAX_TRADE_PCT:      "0.25"
-          ATR_SL_MULT:        "1.2"
-          ATR_TP_MULT:        "3.5"
-          HARD_SL_PCT:        "0.020"
-          MAX_DAILY_LOSS_PCT: "0.08"
-          MAX_OPEN_POSITIONS: "3"
-          MAX_HOLD_SECONDS:   "600"
+          TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          MEXC_API_KEY:        ${{ secrets.MEXC_API_KEY }}
+          MEXC_SECRET_KEY:     ${{ secrets.MEXC_SECRET_KEY }}
+          MAX_TRADE_PCT:       "0.25"
+          MAX_OPEN_POSITIONS:  "5"
