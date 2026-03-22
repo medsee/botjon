@@ -71,19 +71,21 @@ class SpotBot:
         # ── Risk parametrlari ────────────────────────────────
         self.max_positions      = int(os.getenv("MAX_OPEN_POSITIONS",  "4"))
         self.trade_pct          = float(os.getenv("MAX_TRADE_PCT",     "0.22"))
-        self.atr_sl_mult        = 1.0    # SL = 1x ATR
-        self.atr_tp_mult        = 2.5    # TP = 2.5x ATR → RR 1:2.5
-        self.hard_sl_pct        = 0.015  # 1.5% o'zgarmas SL (qattiq)
-        self.max_daily_loss_pct = 0.08   # 8% kunlik limit
-        self.max_hold_seconds   = 300    # 5 daqiqa max
+        self.atr_sl_mult        = 1.5    # SL = 1.5x ATR (oldin 1.0)
+        self.atr_tp_mult        = 3.0    # TP = 3.0x ATR → RR 1:2 (oldin 2.5)
+        self.hard_sl_pct        = 0.025  # 2.5% o'zgarmas HardSL (oldin 1.5%)
+        self.max_daily_loss_pct = 0.05   # 5% kunlik limit (oldin 8%)
+        self.max_hold_seconds   = 480    # 8 daqiqa max (oldin 5)
         self.min_usdt           = 2.0
 
         # ── Tezlik ──────────────────────────────────────────
         self.scan_interval    = 5
         self.monitor_interval = 1
-        self.top_symbols_limit = 50
+        self.top_symbols_limit = 20   # Faqat top 20 — sifatli coinlar
         self.batch_size       = 10
         self.batch_delay      = 0.15
+        self.min_price        = 0.001  # $0.001 dan past coinlar xavfli
+        self.min_volume       = 500_000  # Minimal 24h hajm $500k
 
         self.positions: dict[str, SpotPosition] = {}
         self.blacklist: set   = set()
@@ -139,7 +141,7 @@ class SpotBot:
             try:
                 vol   = float(t.get("quoteVolume", 0))
                 price = float(t.get("lastPrice", 0))
-                if vol > 50000 and price > 0.0000001:
+                if vol > self.min_volume and price >= self.min_price:
                     usdt.append((spot_sym, vol))
             except:
                 pass
@@ -183,7 +185,7 @@ class SpotBot:
         tp_pct = (tp - signal.price) / signal.price * 100
 
         # SL juda katta bo'lsa o'tkazib yuborish
-        if sl_pct > 2.0:
+        if sl_pct > 3.0:
             return False
 
         # Minimum miqdor tekshiruvi: sotib olingan coin keyinchalik sotib bo'ladimi?
