@@ -264,22 +264,22 @@ class MEXCSpot:
 
         # 2. StepSize bo'yicha yaxlitlash
         decimals = await self.get_step_size(symbol)
-        factor   = 10 ** decimals
-        qty_adj  = int(use_qty * factor) / factor
 
-        # 3. Agar nol bo'lsa — kattaroq yaxlitlash sinab ko'r
+        # 3. Eng yaxshi decimals ni avtomatik topish (kattadan kichikka)
+        qty_adj  = 0.0
+        best_dec = decimals
+        for d in range(decimals, -1, -1):
+            f = 10 ** d
+            candidate = int(use_qty * f) / f
+            if candidate > 0:
+                qty_adj  = candidate
+                best_dec = d
+                break
+
+        logger.info(f"SELL {sym}: real={real_qty:.8f} use={use_qty:.8f} adj={qty_adj:.8f} (dec={best_dec})")
+
         if qty_adj <= 0:
-            for d in range(max(0, decimals-1), -1, -1):
-                f = 10 ** d
-                qty_adj = int(use_qty * f) / f
-                if qty_adj > 0:
-                    decimals = d
-                    break
-
-        logger.info(f"SELL {sym}: real={real_qty:.8f} use={use_qty:.8f} adj={qty_adj:.8f} (dec={decimals})")
-
-        if qty_adj <= 0:
-            logger.error(f"SELL {sym}: qty_adj=0, sotib bo'lmadi")
+            logger.error(f"SELL {sym}: qty_adj=0, miqdor birja minimumidan kichik — sotib bo'lmadi")
             return None
 
         result = await self._post("/api/v3/order", {
@@ -289,12 +289,12 @@ class MEXCSpot:
             "quantity": qty_adj,
         })
 
-        # Agar quantity scale xatosi bo'lsa — cache tozalab qayta urinish
-        if result is None and symbol in self._symbol_info_cache:
-            logger.warning(f"SELL {sym}: quantity xato, cache tozalanib qayta uriniladi")
-            del self._symbol_info_cache[symbol]
-            # Narxga qarab oddiy yaxlitlash
-            for d in [0, 1, 2, 3, 4]:
+        # Agar quantity scale xatosi bo'lsa — cache tozalab, har bir decimals ni sinab ko'r
+        if result is None:
+            if symbol in self._symbol_info_cache:
+                del self._symbol_info_cache[symbol]
+            logger.warning(f"SELL {sym}: quantity xato, cache tozalanib barcha decimals sinab ko'riladi")
+            for d in range(best_dec, -1, -1):
                 f2 = 10 ** d
                 qa = int(use_qty * f2) / f2
                 if qa > 0:
@@ -310,6 +310,21 @@ class MEXCSpot:
                         break
 
         return result
+
+    async def can_sell(self, symbol: str, qty: float) -> bool:
+        """SELL qilishdan oldin miqdor yetarlimi tekshirish"""
+        sym  = symbol.replace("_", "")
+        base = sym.replace("USDT", "")
+        real_qty = await self.get_asset_balance(base)
+        if real_qty <= 0:
+            return False
+        use_qty  = min(real_qty, qty)
+        decimals = await self.get_step_size(symbol)
+        for d in range(decimals, -1, -1):
+            f = 10 ** d
+            if int(use_qty * f) / f > 0:
+                return True
+        return False
 
     async def get_open_orders(self, symbol: str = None) -> list:
         params = {}
