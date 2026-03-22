@@ -186,6 +186,18 @@ class SpotBot:
         if sl_pct > 2.0:
             return False
 
+        # Minimum miqdor tekshiruvi: sotib olingan coin keyinchalik sotib bo'ladimi?
+        decimals = await self.api.get_step_size(signal.symbol)
+        min_qty  = 1.0 / (10 ** decimals) if decimals >= 0 else 1.0
+        expected_qty = usdt_amount / signal.price
+        if expected_qty < min_qty:
+            logger.warning(
+                f"BUY o'tkazib yuborildi {signal.symbol}: "
+                f"kutilgan qty={expected_qty:.8f} < min={min_qty:.8f} "
+                f"(narx={signal.price:.4f}, summa=${usdt_amount:.2f})"
+            )
+            return False
+
         logger.info(f"BUY: {signal.symbol} ${usdt_amount:.2f} @ {signal.price:.6f} TP={tp_pct:.1f}% SL={sl_pct:.1f}%")
 
         order = await self.api.buy_market(signal.symbol, usdt_amount)
@@ -418,49 +430,6 @@ class SpotBot:
                     opened  += 1
                     balance -= balance * self.trade_pct
                 await asyncio.sleep(0.2)
-
-    async def sync_positions(self):
-        """MEXC dagi haqiqiy balanslarni tekshirib, bot pozitsiyalarini sinxronlashtirish"""
-        try:
-            r = await self.api._get("/api/v3/account", signed=True)
-            if not r:
-                return
-            synced = 0
-            for b in r.get("balances", []):
-                asset = b.get("asset", "")
-                free  = float(b.get("free", 0))
-                if asset == "USDT" or free <= 0:
-                    continue
-                symbol = f"{asset}_USDT"
-                # Agar bot da yo'q, lekin MEXC da bor
-                if symbol not in self.positions and free > 0:
-                    ticker = await self.api.get_ticker(symbol)
-                    if not ticker:
-                        continue
-                    price = float(ticker.get("lastPrice", 0))
-                    if price <= 0 or free * price < 1.0:
-                        continue
-                    # Taxminiy pozitsiya yaratish
-                    tp = price * 1.025   # 2.5% TP
-                    sl = price * 0.985   # 1.5% SL
-                    pos = SpotPosition(
-                        symbol=symbol,
-                        entry_price=price,
-                        qty=free,
-                        tp=tp, sl=sl,
-                        hard_sl=price * 0.980,
-                        usdt_spent=free * price,
-                        peak_price=price,
-                    )
-                    self.positions[symbol] = pos
-                    synced += 1
-                    logger.info(f"Sinxron: {symbol} qty={free:.6f} @ {price:.6f}")
-            if synced > 0:
-                msg = "Sinxron: " + str(synced) + " ta pozitsiya yuklandi"
-                await self.notify(msg)
-        except Exception as e:
-            logger.error(f"Sinxron xato: {e}")
-
 
     async def sync_positions(self):
         """MEXC dagi haqiqiy balanslarni tekshirib sinxronlashtirish"""
