@@ -1,239 +1,528 @@
 """
-MEXC Spot Strategy - FAST v7
-Tez signal, ko'p savdo, komissiyadan katta TP
+MEXC Spot Bot - FAST v7
+Tez, ko'p savdo, komissiyani hisobga oladi, sliv yo'q
 """
+import asyncio
 import logging
-from dataclasses import dataclass
+import os
+import time
+from dataclasses import dataclass, field
 from typing import Optional
+from dotenv import load_dotenv
 
+from mexc_spot import MEXCSpot
+from spot_strategy import SpotStrategy, SpotSignal
+
+load_dotenv()
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("spot.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class SpotSignal:
-    symbol: str
-    strength: float
-    reason: str
-    price: float
-    atr: float
-
-
-def ema(prices, period):
-    if len(prices) < period:
-        return prices[-1] if prices else 0
-    k = 2 / (period + 1)
-    val = sum(prices[:period]) / period
-    for p in prices[period:]:
-        val = p * k + val * (1 - k)
-    return val
-
-
-def rsi(prices, period=14):
-    if len(prices) < period + 1:
-        return 50.0
-    gains, losses = [], []
-    for i in range(1, len(prices)):
-        d = prices[i] - prices[i - 1]
-        gains.append(max(d, 0))
-        losses.append(max(-d, 0))
-    ag = sum(gains[-period:]) / period
-    al = sum(losses[-period:]) / period
-    if al == 0:
-        return 100.0
-    return 100 - (100 / (1 + ag / al))
-
-
-def stoch_rsi(prices, rsi_p=14, stoch_p=14):
-    if len(prices) < rsi_p + stoch_p:
-        return 50.0, 50.0
-    rsi_vals = [rsi(prices[:i], rsi_p) for i in range(rsi_p, len(prices) + 1)]
-    if len(rsi_vals) < stoch_p:
-        return 50.0, 50.0
-    recent = rsi_vals[-stoch_p:]
-    lo, hi = min(recent), max(recent)
-    if hi == lo:
-        return 50.0, 50.0
-    k = (rsi_vals[-1] - lo) / (hi - lo) * 100
-    d = sum((r - lo) / (hi - lo) * 100 for r in recent[-3:]) / 3
-    return round(k, 1), round(d, 1)
-
-
-def bollinger(prices, period=20, mult=2.0):
-    if len(prices) < period:
-        p = prices[-1]
-        return p, p, p
-    w = prices[-period:]
-    mid = sum(w) / period
-    std = (sum((x - mid) ** 2 for x in w) / period) ** 0.5
-    return mid + mult * std, mid, mid - mult * std
-
-
-def atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1:
-        return closes[-1] * 0.015
-    trs = []
-    for i in range(1, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1])
-        )
-        trs.append(tr)
-    return sum(trs[-period:]) / period
-
-
-BLACKLISTED_TOKENS = {
-    "CARROT", "MEME", "PEPE", "SHIB", "FLOKI", "BONK", "WIF",
-    "TURBO", "DEGEN", "NEIRO", "BOME", "MYRO", "POPCAT",
-    "PONKE", "SLERF", "TRUMP", "MELANIA", "FARTCOIN", "GOAT",
-    "MOODENG", "PNUT", "ACT", "AIDOGE", "BABYDOGE", "SAMO",
-    "KISHU", "AKITA", "HOGE", "ELON", "CATE", "VOLT",
-    "NEXFI", "REPAI", "WLFI", "TONIXAI", "BANANAS31",
+S = {
+    "rocket":"🚀","fire":"🔥","gem":"💎","money":"💰",
+    "chart_up":"📈","chart_dn":"📉","win":"✅","loss":"❌",
+    "warn":"⚠️","shield":"🛡","target":"🎯","clock":"⏱",
+    "coin":"🪙","bank":"🏦","stats":"📊","bolt":"⚡",
+    "stop":"🛑","ok":"👌","trophy":"🏆","green":"🟢",
+    "red":"🔴","dragon":"🐉","muscle":"💪","star":"⭐",
+    "boom":"💥","eyes":"👀","cry":"😢","bull":"🐂",
 }
 
 
-class SpotStrategy:
+@dataclass
+class SpotPosition:
+    symbol: str
+    entry_price: float
+    qty: float
+    tp: float
+    sl: float
+    hard_sl: float
+    usdt_spent: float
+    open_time: float = field(default_factory=time.time)
+    peak_price: float = 0.0
+    breakeven_moved: bool = False
+    trailing_active: bool = False
+
+    @property
+    def age_seconds(self):
+        return time.time() - self.open_time
+
+    def pnl_pct(self, price: float) -> float:
+        return (price - self.entry_price) / self.entry_price * 100
+
+    def pnl_usdt(self, price: float) -> float:
+        return self.qty * (price - self.entry_price)
+
+
+class SpotBot:
     def __init__(self):
-        self.min_strength = 0.40
-        self.min_atr_pct  = 0.003
-        self.max_atr_pct  = 0.07
+        self.api      = MEXCSpot(
+            api_key=os.getenv("MEXC_API_KEY", ""),
+            secret_key=os.getenv("MEXC_SECRET_KEY", ""),
+        )
+        self.strategy = SpotStrategy()
 
-    def analyze(self, symbol: str, klines: list, ticker: dict) -> Optional[SpotSignal]:
-        if len(klines) < 30:
-            return None
+        # ── Risk ─────────────────────────────────────────────
+        self.max_positions  = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+        self.trade_pct      = float(os.getenv("MAX_TRADE_PCT", "0.25"))
+
+        # TP/SL — komissiyani hisobga olgan holda
+        # MEXC komissiyasi: 0.1% per tomon = 0.2% jami
+        # TP kamida 1.2% bo'lishi kerak (0.2% komissiya + 1% foyda)
+        self.atr_sl_mult    = 1.0
+        self.atr_tp_mult    = 3.0
+        self.min_tp_pct     = 0.012   # Minimal TP 1.2%
+        self.min_sl_pct     = 0.007   # Minimal SL 0.7% (tez urmasin)
+        self.hard_sl_pct    = 0.025   # HardSL 2.5%
+        self.max_sl_pct     = 0.030   # SL 3% dan oshsa kirma
+
+        self.max_daily_loss_pct = 0.08  # 8% kunlik limit
+        self.max_hold_seconds   = 480   # 8 daqiqa
+        self.min_usdt           = 1.5
+
+        # ── Tezlik ───────────────────────────────────────────
+        self.scan_interval     = 3      # 3 sekundda bir — TEZROQ
+        self.monitor_interval  = 1
+        self.top_symbols_limit = 200    # Barcha coinlar
+        self.batch_size        = 20     # Katta batch — tezroq
+        self.batch_delay       = 0.05   # Minimal kutish
+        self.min_price         = 0.00001
+        self.min_volume        = 30_000
+        self.cache_ttl         = 90     # 1.5 daqiqada yangi coinlar
+
+        self.positions: dict[str, SpotPosition] = {}
+        self.blacklist: set   = set()
+        self.blacklist_time: dict = {}
+        self.symbol_cache: list = []
+        self.cache_time: float  = 0
+
+        self.telegram_token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        self.running = False
+
+        self.total_pnl        = 0.0
+        self.win_count        = 0
+        self.loss_count       = 0
+        self.scan_count       = 0
+        self.starting_balance = 0.0
+        self.daily_loss       = 0.0
+        self.daily_start_time = time.time()
+
+    async def notify(self, msg: str):
+        if not self.telegram_token or not self.telegram_chat_id:
+            return
+        import aiohttp
+        url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
         try:
-            closes = [float(k.get("close", 0)) for k in klines]
-            opens  = [float(k.get("open",  0)) for k in klines]
-            highs  = [float(k.get("high",  0)) for k in klines]
-            lows   = [float(k.get("low",   0)) for k in klines]
-            vols   = [float(k.get("vol",   0)) for k in klines]
-        except:
-            return None
+            async with aiohttp.ClientSession() as s:
+                await s.post(url, json={
+                    "chat_id": self.telegram_chat_id,
+                    "text": msg, "parse_mode": "Markdown",
+                }, timeout=aiohttp.ClientTimeout(total=8))
+        except Exception as e:
+            logger.error(f"Telegram: {e}")
 
-        price = closes[-1]
-        if price <= 0 or price < 0.00001:
-            return None
+    async def get_top_symbols(self) -> list:
+        now = time.time()
+        if self.symbol_cache and (now - self.cache_time) < self.cache_ttl:
+            return self.symbol_cache
+        tickers = await self.api.get_all_tickers()
+        if not tickers:
+            return self.symbol_cache or []
+        skip = ["DOWN", "UP", "BEAR", "BULL", "3L", "3S", "2L", "2S"]
+        usdt = []
+        for t in tickers:
+            sym = t.get("symbol", "")
+            if not sym.endswith("USDT"):
+                continue
+            if any(k in sym for k in skip):
+                continue
+            spot_sym = sym[:-4] + "_USDT"
+            if spot_sym in self.blacklist:
+                continue
+            try:
+                vol   = float(t.get("quoteVolume", 0))
+                price = float(t.get("lastPrice", 0))
+                if vol >= self.min_volume and price >= self.min_price:
+                    usdt.append((spot_sym, vol))
+            except:
+                pass
+        usdt.sort(key=lambda x: x[1], reverse=True)
+        self.symbol_cache = [s for s, _ in usdt[:self.top_symbols_limit]]
+        self.cache_time   = now
+        logger.info(f"Kesh: {len(self.symbol_cache)} juftlik")
+        return self.symbol_cache
 
-        base = symbol.replace("_USDT", "").upper()
-        if base in BLACKLISTED_TOKENS:
-            return None
+    def calc_tp_sl(self, entry: float, atr_val: float):
+        # ATR ga asoslangan
+        raw_tp = entry + self.atr_tp_mult * atr_val
+        raw_sl = entry - self.atr_sl_mult * atr_val
+        hard_sl = entry * (1 - self.hard_sl_pct)
 
-        atr_val = atr(highs, lows, closes, 14)
-        atr_pct = atr_val / price
-        if atr_pct < self.min_atr_pct or atr_pct > self.max_atr_pct:
-            return None
+        # Minimal chegara — komissiyani hisobga oladi
+        tp = max(raw_tp, entry * (1 + self.min_tp_pct))
+        sl = min(raw_sl, entry * (1 - self.min_sl_pct))
+        sl = max(sl, hard_sl)
 
-        e5  = ema(closes, 5)
-        e10 = ema(closes, 10)
-        e21 = ema(closes, 21)
-        rsi7  = rsi(closes, 7)
-        srsi_k, srsi_d = stoch_rsi(closes, 14, 14)
-        bb_up, bb_mid, bb_lo = bollinger(closes, 20)
-        bb_width = bb_up - bb_lo
-        bb_pct   = (price - bb_lo) / bb_width if bb_width > 0 else 0.5
-        avg_vol   = sum(vols[-10:]) / 10 if len(vols) >= 10 else 1
-        vol_ratio = vols[-1] / avg_vol if avg_vol > 0 else 1
-        mom3 = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes) >= 4 else 0
-        bull1 = closes[-1] > opens[-1]
-        bull2 = closes[-2] > opens[-2] if len(closes) >= 2 else True
+        return round(tp, 8), round(sl, 8), round(hard_sl, 8)
 
-        # ── STOP SHARTLAR ─────────────────────────────────────
-        if rsi7 > 75:        return None
-        if bb_pct > 0.88:    return None
-        if mom3 < -7.0:      return None
-        if vol_ratio < 0.15: return None
-        if mom3 > 12.0:      return None
+    async def open_position(self, signal: SpotSignal, balance: float) -> bool:
+        if signal.symbol in self.positions:
+            return False
+        if len(self.positions) >= self.max_positions:
+            return False
 
-        # ── BALL HISOBLASH ───────────────────────────────────
-        score   = 0.0
-        reasons = []
+        if signal.symbol in self.blacklist_time:
+            if time.time() - self.blacklist_time[signal.symbol] < 120:
+                return False
+            else:
+                del self.blacklist_time[signal.symbol]
 
-        # 1. EMA trend
-        if e5 > e10 > e21:
-            score += 0.15; reasons.append("EMA⬆️")
-        elif e5 > e10:
-            score += 0.08; reasons.append("EMA↗")
-        elif e5 < e10 < e21:
-            score -= 0.06
+        usdt_amount = balance * self.trade_pct
+        usdt_amount = max(usdt_amount, 1.5)
+        if usdt_amount > balance * 0.9:
+            usdt_amount = balance * 0.9
 
-        # 2. RSI — asosiy signal
-        if rsi7 < 15:
-            score += 0.42; reasons.append(f"RSI💥{rsi7:.0f}")
-        elif rsi7 < 25:
-            score += 0.32; reasons.append(f"RSI🔥{rsi7:.0f}")
-        elif rsi7 < 35:
-            score += 0.22; reasons.append(f"RSI↓{rsi7:.0f}")
-        elif rsi7 < 45:
-            score += 0.12; reasons.append(f"RSI{rsi7:.0f}")
-        elif rsi7 < 55:
-            score += 0.04
-        elif rsi7 > 65:
-            score -= 0.12
+        tp, sl, hard_sl = self.calc_tp_sl(signal.price, signal.atr)
+        sl_pct = (signal.price - sl) / signal.price * 100
+        tp_pct = (tp - signal.price) / signal.price * 100
 
-        # 3. StochRSI
-        if srsi_k < 8:
-            score += 0.30; reasons.append(f"SRSI💥{srsi_k:.0f}")
-        elif srsi_k < 18:
-            score += 0.22; reasons.append(f"SRSI🔥{srsi_k:.0f}")
-        elif srsi_k < 30:
-            score += 0.13; reasons.append(f"SRSI↓{srsi_k:.0f}")
-        elif srsi_k < 50:
-            score += 0.05
-        elif srsi_k > 80:
-            score -= 0.10
+        # SL juda katta bo'lsa o'tkazib yubor
+        if sl_pct > self.max_sl_pct * 100:
+            return False
 
-        if srsi_k > srsi_d and srsi_k < 50:
-            score += 0.08; reasons.append("SRSI↗")
+        # TP komissiyadan kamida 5x katta bo'lsin
+        if tp_pct < 0.5:
+            return False
 
-        # 4. Bollinger
-        if price < bb_lo:
-            score += 0.28; reasons.append("BB💥")
-        elif bb_pct < 0.10:
-            score += 0.20; reasons.append("BB🔥")
-        elif bb_pct < 0.25:
-            score += 0.12; reasons.append("BB↓")
-        elif bb_pct < 0.42:
-            score += 0.05
-        elif bb_pct > 0.75:
-            score -= 0.08
+        # Min miqdor tekshiruv
+        decimals = await self.api.get_step_size(signal.symbol)
+        min_qty  = 1.0 / (10 ** decimals) if decimals >= 0 else 1.0
+        if usdt_amount / signal.price < min_qty:
+            logger.warning(f"BUY skip {signal.symbol}: miqdor kam")
+            return False
 
-        # 5. Hajm
-        if vol_ratio > 3.0:
-            score += 0.16; reasons.append(f"Vol💥{vol_ratio:.1f}x")
-        elif vol_ratio > 2.0:
-            score += 0.11; reasons.append(f"Vol🔥{vol_ratio:.1f}x")
-        elif vol_ratio > 1.3:
-            score += 0.06; reasons.append(f"Vol↑{vol_ratio:.1f}x")
+        logger.info(f"BUY: {signal.symbol} ${usdt_amount:.2f} @ {signal.price:.6f} TP=+{tp_pct:.1f}% SL=-{sl_pct:.1f}%")
 
-        # 6. Momentum
-        if 0.2 < mom3 < 5.0:
-            score += 0.09; reasons.append(f"Mom↑{mom3:.1f}%")
-        elif mom3 > 0:
-            score += 0.03
-        elif mom3 < -2.5:
-            score -= 0.08
+        order = await self.api.buy_market(signal.symbol, usdt_amount)
+        if not order:
+            self.blacklist_time[signal.symbol] = time.time()
+            return False
 
-        # 7. Sham pattern
-        if bull1 and bull2:
-            score += 0.07; reasons.append("🕯💚")
-        elif bull1:
-            score += 0.03
+        qty   = float(order.get("executedQty", 0))
+        fills = order.get("fills", [])
+        if qty <= 0 and fills:
+            qty = sum(float(f.get("qty", 0)) for f in fills)
+        if qty <= 0:
+            qty = usdt_amount / signal.price
 
-        score = max(0.0, min(score, 1.0))
+        spent        = float(order.get("cummulativeQuoteQty", usdt_amount))
+        actual_price = spent / qty if qty > 0 else signal.price
+        tp, sl, hard_sl = self.calc_tp_sl(actual_price, signal.atr)
 
-        logger.info(
-            f"[SIG] {symbol} | score={score:.2f} | "
-            f"RSI={rsi7:.0f} SRSI={srsi_k:.0f} | "
-            f"BB={bb_pct:.2f} | Vol={vol_ratio:.1f}x | "
-            f"ATR={atr_pct*100:.2f}% | mom={mom3:.2f}%"
+        sl_pct2 = (actual_price - sl) / actual_price * 100
+        tp_pct2 = (tp - actual_price) / actual_price * 100
+        rr      = tp_pct2 / sl_pct2 if sl_pct2 > 0 else 0
+        base    = signal.symbol.replace("_USDT", "")
+
+        pos = SpotPosition(
+            symbol=signal.symbol, entry_price=actual_price,
+            qty=qty, tp=tp, sl=sl, hard_sl=hard_sl,
+            usdt_spent=spent, peak_price=actual_price,
+        )
+        self.positions[signal.symbol] = pos
+
+        await self.notify(
+            f"{S['rocket']} *POZITSIYA OCHILDI* {S['fire']}\n\n"
+            f"{S['gem']} `{signal.symbol}`\n"
+            f"{S['money']} Narx: `${actual_price:,.6f}`\n"
+            f"{S['coin']} `{qty:.4f} {base}` • `${spent:.2f} USDT`\n\n"
+            f"{S['target']} TP: `${tp:,.6f}` _(+{tp_pct2:.1f}%)_\n"
+            f"{S['shield']} SL: `${sl:,.6f}` _(-{sl_pct2:.1f}%)_\n\n"
+            f"{S['stats']} Kuch: `{signal.strength:.0%}` | RR: `1:{rr:.1f}`\n"
+            f"{S['bolt']} _{signal.reason}_"
+        )
+        return True
+
+    async def close_position(self, symbol: str, reason: str, price: float):
+        pos = self.positions.get(symbol)
+        if not pos:
+            return
+
+        pnl_pct  = pos.pnl_pct(price)
+        pnl_usdt = pos.pnl_usdt(price)
+        won      = pnl_pct > 0.1  # Komissiyadan yuqori bo'lsa win
+
+        logger.info(f"SELL: {symbol} @ {price:.6f} PnL={pnl_pct:.2f}% ({pnl_usdt:+.3f}) | {reason}")
+
+        order = await self.api.sell_market(symbol, pos.qty)
+        if order and order.get("reason") == "zero_balance":
+            if symbol in self.positions:
+                del self.positions[symbol]
+            return
+        if not order:
+            await asyncio.sleep(1)
+            order = await self.api.sell_market(symbol, pos.qty)
+
+        self.total_pnl += pnl_usdt
+        if won:
+            self.win_count += 1
+        else:
+            self.loss_count += 1
+            self.daily_loss -= abs(pnl_usdt)
+            self.blacklist_time[symbol] = time.time()
+
+        if symbol in self.positions:
+            del self.positions[symbol]
+
+        total  = self.win_count + self.loss_count
+        wr     = self.win_count / total * 100 if total > 0 else 0
+        hold   = int(pos.age_seconds)
+        header = f"{S['trophy']} *FOYDA!* {S['chart_up']}{S['fire']}" if won else f"{S['cry']} *Zarar* {S['chart_dn']}"
+
+        await self.notify(
+            f"{header}\n\n"
+            f"{S['gem']} `{symbol}`\n"
+            f"{'📈' if won else '📉'} PnL: `{'+' if won else ''}{pnl_pct:.2f}%` "
+            f"(`{'+' if won else ''}{pnl_usdt:.3f} USDT`)\n"
+            f"{S['clock']} `{hold//60}:{hold%60:02d}` | {reason}\n\n"
+            f"{S['trophy']} `{self.win_count}W/{self.loss_count}L` "
+            f"Win: `{wr:.0f}%` | "
+            f"PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.3f} USDT`"
         )
 
-        if score >= self.min_strength:
-            return SpotSignal(
-                symbol=symbol,
-                strength=score,
-                reason=", ".join(reasons[:4]),
-                price=price,
-                atr=atr_val,
-            )
-        return None
+    async def monitor_positions(self):
+        if not self.positions:
+            return
+
+        async def check(symbol: str, pos: SpotPosition):
+            try:
+                ticker = await self.api.get_ticker(symbol)
+                if not ticker:
+                    return
+                price = float(ticker.get("lastPrice", 0))
+                if price <= 0:
+                    return
+
+                pnl = pos.pnl_pct(price)
+                if price > pos.peak_price:
+                    pos.peak_price = price
+
+                # 1) HardSL
+                if price <= pos.hard_sl:
+                    await self.close_position(symbol, f"{S['shield']}HardSL {pnl:.1f}%", price)
+                    return
+                # 2) Max vaqt
+                if pos.age_seconds >= self.max_hold_seconds:
+                    await self.close_position(symbol, f"{S['clock']}Vaqt {pos.age_seconds/60:.0f}daq", price)
+                    return
+                # 3) TP
+                if price >= pos.tp:
+                    await self.close_position(symbol, f"{S['target']}TP +{pnl:.1f}%", price)
+                    return
+                # 4) SL
+                if price <= pos.sl:
+                    await self.close_position(symbol, f"{S['shield']}SL {pnl:.1f}%", price)
+                    return
+                # 5) Break-even: 1% foydada SL = kirish + 0.1%
+                if not pos.breakeven_moved and pnl >= 1.0:
+                    new_sl = pos.entry_price * 1.001
+                    if new_sl > pos.sl:
+                        pos.sl = new_sl
+                        pos.breakeven_moved = True
+                        logger.info(f"BreakEven: {symbol} SL={new_sl:.6f}")
+                # 6) Trailing: 1.8% foydadan, peak dan 0.9% past
+                if pnl >= 1.8:
+                    trail = pos.peak_price * 0.991
+                    if trail > pos.sl:
+                        pos.sl = trail
+
+            except Exception as e:
+                logger.error(f"Monitor {symbol}: {e}")
+
+        await asyncio.gather(*[check(s, p) for s, p in list(self.positions.items())])
+
+    async def check_daily_loss(self, balance: float) -> bool:
+        if self.starting_balance <= 0:
+            self.starting_balance = balance
+            return True
+        if time.time() - self.daily_start_time >= 86400:
+            self.daily_loss = 0
+            self.daily_start_time = time.time()
+            self.starting_balance = balance
+            return True
+        if self.starting_balance > 0:
+            loss_pct = abs(self.daily_loss) / self.starting_balance * 100
+            if loss_pct >= self.max_daily_loss_pct * 100:
+                await self.notify(
+                    f"{S['warn']} *KUNLIK ZARAR LIMITI!*\n"
+                    f"Zarar: `{loss_pct:.1f}%` | Bot to'xtatildi {S['stop']}"
+                )
+                return False
+        return True
+
+    async def scan_and_trade(self):
+        balance = await self.api.get_balance("USDT")
+        if not await self.check_daily_loss(balance):
+            return
+        if len(self.positions) >= self.max_positions:
+            return
+        if balance < self.min_usdt:
+            return
+
+        self.scan_count += 1
+        symbols = await self.get_top_symbols()
+        if not symbols:
+            return
+
+        signals = []
+        lock    = asyncio.Lock()
+
+        async def analyze(symbol):
+            if symbol in self.positions or symbol in self.blacklist:
+                return
+            if symbol in self.blacklist_time:
+                if time.time() - self.blacklist_time[symbol] < 90:
+                    return
+            try:
+                klines_t = self.api.get_klines(symbol, "1m", 60)
+                ticker_t = self.api.get_ticker(symbol)
+                klines, ticker = await asyncio.gather(klines_t, ticker_t)
+                if not klines or not ticker:
+                    return
+                signal = self.strategy.analyze(symbol, klines, ticker)
+                if signal:
+                    async with lock:
+                        signals.append(signal)
+            except Exception as e:
+                logger.debug(f"{symbol}: {e}")
+
+        # Barcha coinlarni parallel skan
+        for i in range(0, len(symbols), self.batch_size):
+            batch = symbols[i:i + self.batch_size]
+            await asyncio.gather(*[analyze(s) for s in batch])
+            await asyncio.sleep(self.batch_delay)
+
+        if not signals:
+            logger.info(f"#{self.scan_count} signal yo'q | {len(self.positions)}pos | ${balance:.2f}")
+            return
+
+        signals.sort(key=lambda x: x.strength, reverse=True)
+        logger.info(f"#{self.scan_count} {len(signals)} signal | ${balance:.2f}")
+
+        slots  = self.max_positions - len(self.positions)
+        opened = 0
+        for sig in signals:
+            if opened >= min(slots, 2):
+                break
+            if sig.symbol not in self.positions:
+                ok = await self.open_position(sig, balance)
+                if ok:
+                    opened  += 1
+                    balance -= balance * self.trade_pct
+                await asyncio.sleep(0.1)
+
+    async def sync_positions(self):
+        try:
+            r = await self.api._get("/api/v3/account", signed=True)
+            if not r:
+                return
+            synced = 0
+            for b in r.get("balances", []):
+                asset = b.get("asset", "")
+                free  = float(b.get("free", 0))
+                if asset == "USDT" or free <= 0:
+                    continue
+                symbol = asset + "_USDT"
+                if symbol in self.positions:
+                    continue
+                ticker = await self.api.get_ticker(symbol)
+                if not ticker:
+                    continue
+                price = float(ticker.get("lastPrice", 0))
+                if price <= 0 or free * price < 1.0:
+                    continue
+                tp      = round(price * 1.025, 8)
+                sl      = round(price * 0.978, 8)
+                hard_sl = round(price * 0.975, 8)
+                pos = SpotPosition(
+                    symbol=symbol, entry_price=price,
+                    qty=free, tp=tp, sl=sl, hard_sl=hard_sl,
+                    usdt_spent=free * price, peak_price=price,
+                )
+                self.positions[symbol] = pos
+                synced += 1
+                logger.info(f"Sinxron: {symbol} qty={free:.6f} @ {price:.6f}")
+            if synced > 0:
+                await self.notify(f"Sinxron: {synced} ta pozitsiya yuklandi")
+        except Exception as e:
+            logger.error(f"Sinxron xato: {e}")
+
+    async def run(self):
+        logger.info("Spot Bot FAST v7 ishga tushdi!")
+        self.running = True
+        balance = await self.api.get_balance("USDT")
+        self.starting_balance = balance
+        await self.sync_positions()
+
+        await self.notify(
+            f"{S['dragon']} *MEXC Spot Bot FAST v7* {S['fire']}\n\n"
+            f"{S['bank']} Balans: `{balance:.2f} USDT`\n"
+            f"{S['shield']} SL: min `0.7%` | TP: min `1.2%`\n"
+            f"{S['target']} HardSL: `2.5%` | Max: `8 daqiqa`\n"
+            f"{S['stats']} Max pozitsiya: `{self.max_positions}`\n"
+            f"{S['bolt']} Skan: `{self.scan_interval}s` | Coinlar: `{self.top_symbols_limit}`\n"
+            f"{S['rocket']} Darhol analiz boshlanmoqda..."
+        )
+
+        await self.scan_and_trade()
+
+        scan_t = monitor_t = hourly_t = 0
+
+        while self.running:
+            try:
+                await asyncio.sleep(1)
+                scan_t    += 1
+                monitor_t += 1
+                hourly_t  += 1
+
+                if monitor_t >= self.monitor_interval:
+                    await self.monitor_positions()
+                    monitor_t = 0
+
+                if scan_t >= self.scan_interval:
+                    await self.scan_and_trade()
+                    scan_t = 0
+
+                if hourly_t >= 3600:
+                    balance = await self.api.get_balance("USDT")
+                    total   = self.win_count + self.loss_count
+                    wr      = self.win_count / total * 100 if total > 0 else 0
+                    await self.notify(
+                        f"{S['stats']} *Soatlik Hisobot*\n\n"
+                        f"{S['bank']} Balans: `{balance:.4f} USDT`\n"
+                        f"{'📈' if self.total_pnl>=0 else '📉'} PnL: `{'+' if self.total_pnl>=0 else ''}{self.total_pnl:.4f} USDT`\n"
+                        f"{S['trophy']} `{self.win_count}W/{self.loss_count}L` Win: `{wr:.0f}%`\n"
+                        f"{S['eyes']} Ochiq: `{len(self.positions)}` | Skan: `{self.scan_count}`"
+                    )
+                    hourly_t = 0
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                logger.error(f"Loop: {e}")
+                await asyncio.sleep(3)
+
+        for symbol in list(self.positions.keys()):
+            ticker = await self.api.get_ticker(symbol)
+            price  = float(ticker.get("lastPrice", 0)) if ticker else 0
+            await self.close_position(symbol, f"{S['stop']} To'xtatildi", price)
+
+        await self.api.close()
+        await self.notify(f"{S['stop']} *Bot to'xtatildi* {S['ok']}")
