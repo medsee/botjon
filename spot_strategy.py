@@ -94,7 +94,7 @@ BLACKLISTED_TOKENS = {
 
 class SpotStrategy:
     def __init__(self):
-        self.min_strength = 0.45
+        self.min_strength = 0.38
         self.min_atr_pct  = 0.002  # 0.2% minimal volatillik
         self.max_atr_pct  = 0.05   # 5% maksimal (eski 8%)
 
